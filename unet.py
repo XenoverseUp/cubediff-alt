@@ -8,21 +8,19 @@ from attention import convert_attention_to_inflated
 from synchronized_norm import convert_groupnorm_to_synchronized
 
 class CubeDiffUNet(nn.Module):
-    """
-    UNet model for CubeDiff, with inflated attention layers for cross-face awareness.
-    This model is based on the pretrained Stable Diffusion UNet, with modifications
-    for handling cubemap faces jointly.
-    """
-
     def __init__(self,
                 pretrained_model_path: str,
                 num_frames: int = 6,
-                device: Optional[torch.device] = None):
+                device: Optional[torch.device] = None,
+                positional_encoding: nn.Module = None,
+                pos_projection: nn.Module = None):
         super().__init__()
 
         self.pretrained_model_path = pretrained_model_path
         self.num_frames = num_frames
         self.device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.positional_encoding = positional_encoding
+        self.pos_projection = pos_projection
 
         self._load_pretrained_unet()
 
@@ -75,7 +73,14 @@ class CubeDiffUNet(nn.Module):
         temb = self.time_embedding(t_emb)
 
         # 2. Process input sample
-        hidden_states = sample
+        hidden_states = self.conv_in(sample)
+
+        if self.positional_encoding is not None:
+            pos_enc = self.positional_encoding.add_positional_encoding_flat(hidden_states)
+            hidden_states_with_pos = torch.cat([hidden_states, pos_enc], dim=1)  # [24, 320+2, 64, 64]
+            hidden_states = self.pos_projection(hidden_states_with_pos)  # [24, 322, 64, 64] -> [24, 320, 64, 64]
+        else:
+            hidden_states = hidden_states
 
         # 3. Down blocks
         down_block_res_samples = []
