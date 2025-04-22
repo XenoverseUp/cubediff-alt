@@ -1,3 +1,6 @@
+__pycache__
+.DS_Store
+
 cubediff_data
 polyhaven_dataset
 outputs
