@@ -23,7 +23,15 @@ class SynchronizedGroupNorm2d(nn.GroupNorm):
 
         if batch_frames % self.num_frames == 0:
             batch_size = batch_frames // self.num_frames
-            channels, height, width = x.shape[1:]
+            
+            # Handle both 3D and 4D tensors
+            if len(x.shape) == 3:
+                # For 3D tensors [B*F, C, L]
+                channels, seq_length = x.shape[1:]
+                height, width = 1, seq_length
+            else:
+                # For 4D tensors [B*F, C, H, W]
+                channels, height, width = x.shape[1:]
 
             original_shape = x.shape
 
@@ -49,19 +57,18 @@ class SynchronizedGroupNorm2d(nn.GroupNorm):
                 x_sync_norm = x_groups_norm.reshape(batch_size, self.num_frames * channels, height, width)
 
                 if self.affine:
-                    weight_expanded = self.weight.repeat(self.num_frames)
-                    bias_expanded = self.bias.repeat(self.num_frames)
-                    x_sync_norm = x_sync_norm * weight_expanded.view(1, -1, 1, 1) + bias_expanded.view(1, -1, 1, 1)
+                    x_sync_norm = x_sync_norm * self.weight.view(1, -1, 1, 1) + self.bias.view(1, -1, 1, 1)
 
-                # Reshape back to original
-                output = x_sync_norm.reshape(original_shape)
-                return output
+                # Reshape back to original shape
+                x_out = x_sync_norm.reshape(original_shape)
+
+                return x_out
 
             except Exception as e:
-                print(f"Warning: SynchronizedGroupNorm2d failed, using standard GroupNorm: {e}")
+                # Fallback to standard group norm if synchronized norm fails
                 return super().forward(x)
-
         else:
+            # Fallback to standard group norm if batch size is not divisible by num_frames
             return super().forward(x)
 
 class SyncGroupNormBlock(nn.Module):

@@ -16,7 +16,6 @@ from accelerate import Accelerator
 from model import CubeDiff
 from config import CubeDiffConfig
 from dataset import CubeDiffDataset
-from prompt_generator import OllamaPromptGenerator
 
 
 def setup_logging(output_dir: str):
