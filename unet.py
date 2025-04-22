@@ -29,7 +29,7 @@ class CubeDiffUNet(nn.Module):
 
             self.time_embedding = unet.time_embedding
             self.time_proj = unet.time_proj
-            self.conv_in = nn.Conv2d(6, unet.conv_in.out_channels, kernel_size=3, padding=1)
+            self.conv_in = nn.Conv2d(4, unet.conv_in.out_channels, kernel_size=3, padding=1)
             self.down_blocks = unet.down_blocks
             self.mid_block = unet.mid_block
             self.up_blocks = unet.up_blocks
