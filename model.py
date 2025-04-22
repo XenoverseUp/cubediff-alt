@@ -52,8 +52,8 @@ class CubeDiff(nn.Module):
         )
 
         self.pos_projection = PositionalProjectionLayer(
-            in_channels=self.unet.conv_in.out_channels+2, # for uv positional encoding
-            out_channels=self.unet.conv_in.out_channels
+            in_channels=self.unet.conv_in.in_channels+2, # for uv positional encoding
+            out_channels=self.unet.conv_in.in_channels
         )
 
         self.cubemap_utils = CubeProjection()
