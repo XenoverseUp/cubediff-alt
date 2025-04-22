@@ -56,9 +56,6 @@ class CubeDiff(nn.Module):
             out_channels=self.unet.conv_in.out_channels
         )
 
-        self.unet.positional_encoding = self.positional_encoding
-        self.unet.pos_projection = self.pos_projection
-
         self.cubemap_utils = CubeProjection()
 
         # Diffusion parameters
@@ -107,6 +104,17 @@ class CubeDiff(nn.Module):
         return self.vae.decode_cubemap(latent_faces)
 
     def q_sample(self, x_start: torch.Tensor, t: torch.Tensor, noise: torch.Tensor) -> torch.Tensor:
+        """
+        Forward diffusion process: q(x_t | x_0)
+
+        Args:
+            x_start: Initial latent [B, C, H, W]
+            t: Timestep [B]
+            noise: Random noise [B, C, H, W]
+
+        Returns:
+            Noisy latent at timestep t
+        """
         sqrt_alphas_cumprod_t = self._extract_into_tensor(self.sqrt_alphas_cumprod, t, x_start.shape)
         sqrt_one_minus_alphas_cumprod_t = self._extract_into_tensor(
             self.sqrt_one_minus_alphas_cumprod, t, x_start.shape
@@ -452,11 +460,15 @@ class CubeDiff(nn.Module):
         # Apply diffusion (noising process)
         noisy_latents = self.q_sample(latents, timesteps.repeat(self.num_frames), noise)
 
-        return noisy_latents, latents, noise
+        noisy_latents_with_pos = self.positional_encoding.add_positional_encoding_flat(noisy_latents)
+        noisy_latents_projected = self.pos_projection(noisy_latents_with_pos)
+
+        return noisy_latents_projected, latents, noise
 
     def forward(self,
                 batch: Dict[str, Any],
                 timesteps: Optional[torch.Tensor] = None) -> Dict[str, torch.Tensor]:
+        # Unpack batch
         images = batch["faces"]  # List of 6 face images [B, 3, H, W]
         text = batch["text"]  # Text prompts (can be single or per-face)
 

@@ -11,16 +11,12 @@ class CubeDiffUNet(nn.Module):
     def __init__(self,
                 pretrained_model_path: str,
                 num_frames: int = 6,
-                device: Optional[torch.device] = None,
-                positional_encoding: nn.Module = None,
-                pos_projection: nn.Module = None):
+                device: Optional[torch.device] = None):
         super().__init__()
 
         self.pretrained_model_path = pretrained_model_path
         self.num_frames = num_frames
         self.device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        self.positional_encoding = positional_encoding
-        self.pos_projection = pos_projection
 
         self._load_pretrained_unet()
 
@@ -33,7 +29,7 @@ class CubeDiffUNet(nn.Module):
 
             self.time_embedding = unet.time_embedding
             self.time_proj = unet.time_proj
-            self.conv_in = unet.conv_in
+            self.conv_in = nn.Conv2d(6, unet.conv_in.out_channels, kernel_size=3, padding=1)
             self.down_blocks = unet.down_blocks
             self.mid_block = unet.mid_block
             self.up_blocks = unet.up_blocks
@@ -74,13 +70,6 @@ class CubeDiffUNet(nn.Module):
 
         # 2. Process input sample
         hidden_states = self.conv_in(sample)
-
-        if self.positional_encoding is not None:
-            pos_enc = self.positional_encoding.add_positional_encoding_flat(hidden_states)
-            hidden_states_with_pos = torch.cat([hidden_states, pos_enc], dim=1)  # [24, 320+2, 64, 64]
-            hidden_states = self.pos_projection(hidden_states_with_pos)  # [24, 322, 64, 64] -> [24, 320, 64, 64]
-        else:
-            hidden_states = hidden_states
 
         # 3. Down blocks
         down_block_res_samples = []
