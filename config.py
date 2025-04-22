@@ -1,7 +1,7 @@
 import os
 
 class CubeDiffConfig:
-    def __init__(self):
+    def __init__(self, **kwargs):
         # Model architecture
         self.pretrained_model_path = "runwayml/stable-diffusion-v1-5"
         self.latent_channels = 4
@@ -62,6 +62,9 @@ class CubeDiffConfig:
         self.local_rank = 0
         self.world_size = 1
         self.distributed = False
+        
+        # Update with provided parameters
+        self.update(**kwargs)
 
     def create_dirs(self):
         """Create necessary directories for outputs"""

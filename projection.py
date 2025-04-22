@@ -124,20 +124,17 @@ class CubeProjection(nn.Module):
         Returns:
             Tensor of shape (..., 2) with equirectangular coordinates
         """
-
         x, y, z = dirs[..., 0], dirs[..., 1], dirs[..., 2]
 
+        # Calculate spherical coordinates
         theta = torch.atan2(x, z)                       # Longitude (azimuth)
         phi = torch.asin(torch.clamp(y, -1.0, 1.0))     # Latitude (elevation)
 
-        u = (theta / (2 * math.pi)) + 0.5               # Map [-π, π] to [0, 1]
-        v = (phi / math.pi) + 0.5                       # Map [-π/2, π/2] to [0, 1]
-
-        u = 2 * u - 1
-        v = 2 * v - 1
+        # Map to UV coordinates
+        u = (theta / (2 * math.pi) + 0.5) * 2 - 1      # Map [-π, π] to [-1, 1]
+        v = (phi / (math.pi/2))                         # Map [-π/2, π/2] to [-1, 1]
 
         grid = torch.stack([u, v], dim=-1)
-
         return grid
 
     def equirect_to_sphere(
@@ -155,16 +152,16 @@ class CubeProjection(nn.Module):
         """
         u, v = grid[..., 0], grid[..., 1]
 
+        # Convert from [-1, 1] to spherical coordinates
+        theta = u * math.pi                             # [-1, 1] to [-π, π]
+        phi = v * (math.pi / 2)                         # [-1, 1] to [-π/2, π/2]
 
-        theta = u * math.pi                 # [-1, 1] to [-π, π]
-        phi = v * (math.pi / 2)             # [-1, 1] to [-π/2, π/2]
-
+        # Convert to Cartesian coordinates
         x = torch.cos(phi) * torch.sin(theta)
         y = torch.sin(phi)
         z = torch.cos(phi) * torch.cos(theta)
 
         dirs = torch.stack([x, y, z], dim=-1)
-
         return dirs
 
     def equirect_to_cubemap(
@@ -192,13 +189,20 @@ class CubeProjection(nn.Module):
         cubemap = torch.zeros(B, 6, C, face_size, face_size, device=device)
 
         for face_idx in range(6):
+            # Generate sampling grid for this face
             grid = self.generate_sampling_grid(face_size, face_size, fov_degrees).to(device)
+            
+            # Convert grid coordinates to 3D directions
             dirs = self.cube_to_sphere(face_idx, grid)
+            
+            # Convert 3D directions to equirectangular coordinates
             eq_grid = self.sphere_to_equirect(dirs, H, W)
+            
+            # Reshape grid to match the expected format for grid_sample
+            # From (H, W, 2) to (B, H, W, 2)
+            eq_grid = eq_grid.unsqueeze(0).repeat(B, 1, 1, 1)
 
-            # (B, 1, face_size, face_size, 2)
-            eq_grid = eq_grid.unsqueeze(0).repeat(B, 1, 1, 1, 1)
-
+            # Sample from equirectangular image
             face = F.grid_sample(
                 equirect,
                 eq_grid,
@@ -207,7 +211,7 @@ class CubeProjection(nn.Module):
                 align_corners=True
             )
 
-            cubemap[:, face_idx] = face.squeeze(1)
+            cubemap[:, face_idx] = face
 
         return cubemap
 

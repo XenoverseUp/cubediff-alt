@@ -9,7 +9,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 from transformers import CLIPTextModel, CLIPTokenizer
-from torchmetrics.image import FrechetInceptionDistance
+from torchmetrics.image.fid import FrechetInceptionDistance
 from torchmetrics.image.kid import KernelInceptionDistance
 
 from unet import CubeDiffUNet
@@ -479,18 +479,21 @@ class CubeDiff(nn.Module):
 
         return noisy_latents_projected, latents, noise
 
-    def training_step(self,
-                    batch: Dict[str, Any],
-                    timesteps: Optional[torch.Tensor] = None) -> Dict[str, torch.Tensor]:
+    def forward(self,
+                batch: Dict[str, Any],
+                timesteps: Optional[torch.Tensor] = None) -> Dict[str, torch.Tensor]:
         """
-        Perform a single training step.
+        Forward pass of the CubeDiff model. This method handles the diffusion process,
+        text conditioning, and loss computation during training.
 
         Args:
-            batch: Batch of data
-            timesteps: Optional predefined timesteps
+            batch: Dictionary containing:
+                - faces: List of 6 face images [B, 3, H, W]
+                - text: Text prompts (can be single or per-face)
+            timesteps: Optional predefined timesteps for diffusion
 
         Returns:
-            Dictionary with loss values
+            Dictionary containing the computed loss
         """
         # Unpack batch
         images = batch["faces"]  # List of 6 face images [B, 3, H, W]
