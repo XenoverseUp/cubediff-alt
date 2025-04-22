@@ -34,6 +34,7 @@ class CubeDiffUNet(nn.Module):
             )
 
             self.time_embedding = unet.time_embedding
+            self.time_proj = unet.time_proj
             self.conv_in = unet.conv_in
             self.down_blocks = unet.down_blocks
             self.mid_block = unet.mid_block
@@ -65,10 +66,13 @@ class CubeDiffUNet(nn.Module):
             timestep = timestep[None].to(sample.device)
 
         # Broadcast timestep to batch dimension
-        timesteps = timestep
+        batch_size = sample.shape[0] // self.num_frames
+        timestep = timestep.expand(batch_size)
+
+        t_emb = self.time_proj(timestep)
 
         # Get time embedding
-        temb = self.time_embedding(timesteps)
+        temb = self.time_embedding(t_emb)
 
         # 2. Process input sample
         hidden_states = sample

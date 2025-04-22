@@ -98,7 +98,7 @@ class PositionalEncoding:
 
         for face_name in ['front', 'right', 'back', 'left', 'up', 'down']:
             encoding = self.position_encodings[face_name].to(device)
-            encodings_list.append(encoding.unsqueeze(0))
+            encodings_list.append(encoding)
 
         encodings = torch.stack(encodings_list, dim=0)
         encodings = encodings.unsqueeze(0).repeat(batch_size, 1, 1, 1, 1)
@@ -204,4 +204,5 @@ class PositionalProjectionLayer(nn.Module):
         self.projection = nn.Conv2d(in_channels, out_channels, kernel_size=1)
 
     def forward(self, x):
+        self.projection.to(x.device)
         return self.projection(x)
