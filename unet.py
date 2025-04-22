@@ -4,8 +4,37 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from diffusers import UNet2DConditionModel
+from diffusers.models.unets.unet_2d_blocks import CrossAttnDownBlock2D
 from attention import convert_attention_to_inflated
 from synchronized_norm import convert_groupnorm_to_synchronized
+
+class CustomCrossAttnDownBlock2D(CrossAttnDownBlock2D):
+    def forward(self,
+                hidden_states: torch.Tensor,
+                temb: Optional[torch.Tensor] = None,
+                encoder_hidden_states: Optional[torch.Tensor] = None,
+                attention_mask: Optional[torch.Tensor] = None,
+                **kwargs) -> Tuple[torch.Tensor, List[torch.Tensor]]:
+        res_samples = []
+
+        for resnet, attn in zip(self.resnets, self.attentions):
+            hidden_states = resnet(hidden_states, temb=temb)
+            res_samples.append(hidden_states)
+
+            if attn is not None:
+                hidden_states = attn(
+                    hidden_states,
+                    encoder_hidden_states=encoder_hidden_states,
+                    attention_mask=attention_mask,
+                    **kwargs
+                )
+                res_samples.append(hidden_states)
+
+        if self.downsamplers is not None:
+            for downsampler in self.downsamplers:
+                hidden_states = downsampler(hidden_states)
+
+        return hidden_states, res_samples
 
 class CubeDiffUNet(nn.Module):
     def __init__(self,
@@ -34,7 +63,22 @@ class CubeDiffUNet(nn.Module):
             self.time_embedding = unet.time_embedding
             self.time_proj = unet.time_proj
             self.conv_in = unet.conv_in
-            self.down_blocks = unet.down_blocks
+            self.down_blocks = nn.ModuleList([
+                CustomCrossAttnDownBlock2D(
+                    num_layers=block.num_layers,
+                    in_channels=block.in_channels,
+                    out_channels=block.out_channels,
+                    temb_channels=block.temb_channels,
+                    add_downsample=hasattr(block, 'downsamplers') and block.downsamplers is not None,
+                    resnet_eps=block.resnets[0].norm1.eps,
+                    resnet_act_fn=block.resnets[0].act_fn.__class__.__name__.lower(),
+                    resnet_groups=block.resnets[0].groups,
+                    cross_attention_dim=block.attentions[0].cross_attention_dim if block.attentions else None,
+                    attn_num_head_channels=block.attentions[0].num_heads if block.attentions else None,
+                    downsample_padding=block.downsamplers[0].padding if block.downsamplers else 1,
+                ) if isinstance(block, CrossAttnDownBlock2D) else block
+                for block in unet.down_blocks
+            ])
             self.mid_block = unet.mid_block
             self.up_blocks = unet.up_blocks
             self.conv_norm_out = unet.conv_norm_out
@@ -44,17 +88,14 @@ class CubeDiffUNet(nn.Module):
             self.in_channels = unet.config.in_channels
             self.cross_attention_dim = unet.config.cross_attention_dim
 
-            # Print UNet structure before conversions
             print("Down blocks before conversion:", len(self.down_blocks), [len(block.resnets) for block in self.down_blocks])
             print("Up blocks before conversion:", len(self.up_blocks), [len(block.resnets) for block in self.up_blocks])
 
-            # Apply conversions
             if self.use_synchronized_norm:
                 convert_groupnorm_to_synchronized(self, self.num_frames)
             if self.use_inflated_attention:
                 convert_attention_to_inflated(self, self.num_frames)
 
-            # Print UNet structure after conversions
             print("Down blocks after conversion:", len(self.down_blocks), [len(block.resnets) for block in self.down_blocks])
             print("Up blocks after conversion:", len(self.up_blocks), [len(block.resnets) for block in self.up_blocks])
 
@@ -120,7 +161,7 @@ class CubeDiffUNet(nn.Module):
                 res_samples = down_block_res_samples[-expected_resnets:]
                 down_block_res_samples = down_block_res_samples[:-expected_resnets]
 
-            print(f"Up block {i} res_samples count:", len(res_samples), [s.shape for s in res_samples if res_samples else []])  # Debug
+            print(f"Up block {i} res_samples count:", len(res_samples), [s.shape for s in res_samples] if res_samples else [])  # Debug
             hidden_states = upsample_block(
                 hidden_states=hidden_states,
                 temb=temb,
