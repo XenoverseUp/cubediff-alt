@@ -11,12 +11,16 @@ class CubeDiffUNet(nn.Module):
     def __init__(self,
                  pretrained_model_path: str,
                  num_frames: int = 6,
-                 device: Optional[torch.device] = None):
+                 device: Optional[torch.device] = None,
+                 use_inflated_attention: bool = True,
+                 use_synchronized_norm: bool = True):
         super().__init__()
 
         self.pretrained_model_path = pretrained_model_path
         self.num_frames = num_frames
         self.device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.use_inflated_attention = use_inflated_attention
+        self.use_synchronized_norm = use_synchronized_norm
 
         self._load_pretrained_unet()
 
@@ -29,7 +33,7 @@ class CubeDiffUNet(nn.Module):
 
             self.time_embedding = unet.time_embedding
             self.time_proj = unet.time_proj
-            self.conv_in = unet.conv_in  # Use pretrained conv_in directly
+            self.conv_in = unet.conv_in
             self.down_blocks = unet.down_blocks
             self.mid_block = unet.mid_block
             self.up_blocks = unet.up_blocks
@@ -40,8 +44,20 @@ class CubeDiffUNet(nn.Module):
             self.in_channels = unet.config.in_channels
             self.cross_attention_dim = unet.config.cross_attention_dim
 
-            convert_groupnorm_to_synchronized(self, self.num_frames)
-            convert_attention_to_inflated(self, self.num_frames)
+            # Print UNet structure before conversions
+            print("Down blocks before conversion:", len(self.down_blocks), [len(block.resnets) for block in self.down_blocks])
+            print("Up blocks before conversion:", len(self.up_blocks), [len(block.resnets) for block in self.up_blocks])
+
+            # Apply conversions
+            if self.use_synchronized_norm:
+                convert_groupnorm_to_synchronized(self, self.num_frames)
+            if self.use_inflated_attention:
+                convert_attention_to_inflated(self, self.num_frames)
+
+            # Print UNet structure after conversions
+            print("Down blocks after conversion:", len(self.down_blocks), [len(block.resnets) for block in self.down_blocks])
+            print("Up blocks after conversion:", len(self.up_blocks), [len(block.resnets) for block in self.up_blocks])
+
         except Exception as e:
             raise RuntimeError(f"Failed to load pretrained UNet: {e}")
 
@@ -59,29 +75,31 @@ class CubeDiffUNet(nn.Module):
         elif torch.is_tensor(timestep) and len(timestep.shape) == 0:
             timestep = timestep[None].to(sample.device)
 
-        # Broadcast timestep to batch dimension
-        batch_size = sample.shape[0] // self.num_frames  # e.g., 24 // 6 = 4
-        timestep = timestep.expand(batch_size)  # [4]
+        batch_size = sample.shape[0] // self.num_frames
+        timestep = timestep.expand(batch_size)
 
-        t_emb = self.time_proj(timestep)  # [4, dim]
-        temb = self.time_embedding(t_emb)  # [4, dim']
-
-        # Repeat temb for each face to match effective batch size (B * num_frames)
-        temb = temb.repeat_interleave(self.num_frames, dim=0)  # [4, dim'] -> [24, dim']
+        t_emb = self.time_proj(timestep)
+        temb = self.time_embedding(t_emb)
+        temb = temb.repeat_interleave(self.num_frames, dim=0)
+        print("temb shape:", temb.shape)  # Debug: Should be [24, dim']
 
         # 2. Process input sample
-        hidden_states = self.conv_in(sample)  # [24, 4, 64, 64] -> [24, 320, 64, 64]
+        hidden_states = self.conv_in(sample)
+        print("hidden_states after conv_in:", hidden_states.shape)  # Debug: Should be [24, 320, 64, 64]
 
         # 3. Down blocks
         down_block_res_samples = []
-        for downsample_block in self.down_blocks:
+        for i, downsample_block in enumerate(self.down_blocks):
             hidden_states, res_samples = downsample_block(
                 hidden_states=hidden_states,
                 temb=temb,
                 encoder_hidden_states=encoder_hidden_states,
                 attention_mask=attention_mask
             )
+            print(f"Down block {i} res_samples count:", len(res_samples), [s.shape for s in res_samples])  # Debug
             down_block_res_samples.extend(res_samples)
+
+        print("Total down_block_res_samples:", len(down_block_res_samples))  # Debug
 
         # 4. Mid block
         hidden_states = self.mid_block(
@@ -90,12 +108,19 @@ class CubeDiffUNet(nn.Module):
             encoder_hidden_states=encoder_hidden_states,
             attention_mask=attention_mask
         )
+        print("hidden_states after mid_block:", hidden_states.shape)  # Debug
 
         # 5. Up blocks
         for i, upsample_block in enumerate(self.up_blocks):
-            res_samples = down_block_res_samples[-len(upsample_block.resnets):]
-            down_block_res_samples = down_block_res_samples[:-len(upsample_block.resnets)]
+            expected_resnets = len(upsample_block.resnets)
+            if len(down_block_res_samples) < expected_resnets:
+                print(f"Warning: Not enough residual connections for up block {i}. Expected {expected_resnets}, got {len(down_block_res_samples)}. Using empty residuals.")
+                res_samples = []
+            else:
+                res_samples = down_block_res_samples[-expected_resnets:]
+                down_block_res_samples = down_block_res_samples[:-expected_resnets]
 
+            print(f"Up block {i} res_samples count:", len(res_samples), [s.shape for s in res_samples if res_samples else []])  # Debug
             hidden_states = upsample_block(
                 hidden_states=hidden_states,
                 temb=temb,
@@ -103,11 +128,13 @@ class CubeDiffUNet(nn.Module):
                 encoder_hidden_states=encoder_hidden_states,
                 attention_mask=attention_mask
             )
+            print(f"hidden_states after up block {i}:", hidden_states.shape)  # Debug
 
         # 6. Output block
         hidden_states = self.conv_norm_out(hidden_states)
         hidden_states = F.silu(hidden_states)
         hidden_states = self.conv_out(hidden_states)
+        print("Final hidden_states:", hidden_states.shape)  # Debug
 
         if not return_dict:
             return hidden_states
@@ -119,24 +146,9 @@ class CubeDiffUNet(nn.Module):
                              timesteps: torch.Tensor,
                              encoder_hidden_states: Optional[torch.Tensor] = None,
                              attention_mask: Optional[torch.Tensor] = None) -> List[torch.Tensor]:
-        """
-        Process a batch of cubemap faces with synchronized normalization.
-
-        Args:
-            latents: List of 6 latent tensors, each [B, C, H, W]
-            timesteps: Diffusion timesteps
-            encoder_hidden_states: Text embeddings
-            attention_mask: Optional attention mask
-
-        Returns:
-            List of processed latent tensors
-        """
         batch_size = latents[0].shape[0]
+        stacked_latents = torch.cat(latents, dim=0)
 
-        # Stack faces to utilize synchronized normalization
-        stacked_latents = torch.cat(latents, dim=0)  # [B*6, C, H, W]
-
-        # Process with UNet
         output = self.forward(
             sample=stacked_latents,
             timestep=timesteps,
