@@ -93,6 +93,7 @@ class CubeDiffUNet(nn.Module):
 
         # 5. Up blocks
         for i, upsample_block in enumerate(self.up_blocks):
+            print(f"Up Block {i}: len(down_block_res_samples) = {len(down_block_res_samples)}, expecting {len(upsample_block.resnets)}") # DEBUG LINE
             res_samples = down_block_res_samples[-len(upsample_block.resnets):]
             down_block_res_samples = down_block_res_samples[:-len(upsample_block.resnets)]
 
