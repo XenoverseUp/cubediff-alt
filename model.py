@@ -19,12 +19,11 @@ from projection import CubeProjection
 from prompt_generator import OllamaPromptGenerator
 from positional_encoding import PositionalEncoding, PositionalProjectionLayer
 
-
 class CubeDiff(nn.Module):
     def __init__(self,
-                config,
-                device: Optional[torch.device] = None,
-                prompt_generator: Optional[OllamaPromptGenerator] = None):
+                 config,
+                 device: Optional[torch.device] = None,
+                 prompt_generator: Optional[OllamaPromptGenerator] = None):
         super().__init__()
 
         self.config = config
@@ -52,8 +51,8 @@ class CubeDiff(nn.Module):
         )
 
         self.pos_projection = PositionalProjectionLayer(
-            in_channels=self.unet.conv_in.in_channels+2, # for uv positional encoding
-            out_channels=self.unet.conv_in.in_channels
+            in_channels=self.unet.conv_in.in_channels + 2,  # 4 + 2 = 6
+            out_channels=self.unet.conv_in.in_channels      # 4
         )
 
         self.cubemap_utils = CubeProjection()
@@ -144,7 +143,6 @@ class CubeDiff(nn.Module):
         Returns:
             Predicted x0
         """
-        # Get alpha and sigma values for timestep t
         alpha_t = self._extract_into_tensor(self.alphas_cumprod, t, x.shape)
         sigma_t = self._extract_into_tensor(self.sqrt_one_minus_alphas_cumprod, t, x.shape)
 
@@ -158,8 +156,8 @@ class CubeDiff(nn.Module):
         return x0_prediction
 
     def get_text_embedding(self,
-                         prompts: Union[List[str], List[List[str]]],
-                         batch_size: int) -> torch.Tensor:
+                          prompts: Union[List[str], List[List[str]]],
+                          batch_size: int) -> torch.Tensor:
         try:
             tokenizer = CLIPTokenizer.from_pretrained(
                 self.config.pretrained_model_path, subfolder="tokenizer"
@@ -204,7 +202,6 @@ class CubeDiff(nn.Module):
 
             else:
                 # Common prompt for all faces
-                # Tokenize text
                 text_input = tokenizer(
                     prompts,
                     padding="max_length",
@@ -213,13 +210,11 @@ class CubeDiff(nn.Module):
                     return_tensors="pt",
                 )
 
-                # Generate embeddings
                 with torch.no_grad():
                     text_embeddings = text_encoder(
                         text_input.input_ids.to(self.device)
                     )[0]
 
-                # Repeat embeddings for all faces
                 embeddings = text_embeddings.repeat_interleave(self.num_frames, dim=0)
 
             return embeddings
@@ -228,7 +223,6 @@ class CubeDiff(nn.Module):
 
     def get_null_embedding(self, batch_size: int) -> torch.Tensor:
         try:
-            # Load tokenizer and text encoder
             tokenizer = CLIPTokenizer.from_pretrained(
                 self.config.pretrained_model_path, subfolder="tokenizer"
             )
@@ -257,16 +251,16 @@ class CubeDiff(nn.Module):
 
     @torch.no_grad()
     def ddim_sample(self,
-                   shape: Tuple[int, ...],
-                   cond_face_latent: Optional[torch.Tensor] = None,
-                   cond_face_mask: Optional[torch.Tensor] = None,
-                   text_embeddings: Optional[torch.Tensor] = None,
-                   uncond_embeddings: Optional[torch.Tensor] = None,
-                   guidance_scale: float = 7.5,
-                   ddim_steps: int = 50,
-                   eta: float = 0.0) -> torch.Tensor:
+                    shape: Tuple[int, ...],
+                    cond_face_latent: Optional[torch.Tensor] = None,
+                    cond_face_mask: Optional[torch.Tensor] = None,
+                    text_embeddings: Optional[torch.Tensor] = None,
+                    uncond_embeddings: Optional[torch.Tensor] = None,
+                    guidance_scale: float = 7.5,
+                    ddim_steps: int = 50,
+                    eta: float = 0.0) -> torch.Tensor:
         device = self.device
-        batch_size = shape[0]
+        batch_size = shape[0] // self.num_frames  # Effective batch size (e.g., 24 // 6 = 4)
 
         latents = torch.randn(shape, device=device)
 
@@ -284,8 +278,10 @@ class CubeDiff(nn.Module):
             # For classifier-free guidance: do 2 forward passes
             latent_model_input = torch.cat([latents] * 2) if guidance_scale > 1.0 else latents
 
-            latent_model_input = self.positional_encoding.add_positional_encoding_flat(latent_model_input)
-            latent_model_input = self.pos_projection(latent_model_input)
+            # Apply positional encoding
+            pos_enc = self.positional_encoding.add_positional_encoding_flat(latent_model_input, num_frames=self.num_frames)
+            latent_model_input_with_pos = torch.cat([latent_model_input, pos_enc], dim=1)
+            latent_model_input_projected = self.pos_projection(latent_model_input_with_pos)
 
             if guidance_scale > 1.0:
                 embeddings = torch.cat([uncond_embeddings, text_embeddings], dim=0)
@@ -293,7 +289,7 @@ class CubeDiff(nn.Module):
                 embeddings = text_embeddings
 
             noise_pred = self.unet(
-                sample=latent_model_input,
+                sample=latent_model_input_projected,
                 timestep=timestep,
                 encoder_hidden_states=embeddings
             )
@@ -331,19 +327,20 @@ class CubeDiff(nn.Module):
 
     @torch.no_grad()
     def generate_panorama(self,
-                        prompts: Union[str, List[str], List[List[str]]],
-                        cond_face_idx: Optional[int] = None,
-                        cond_face_image: Optional[torch.Tensor] = None,
-                        guidance_scale: float = 7.5,
-                        height: int = 512,
-                        width: int = 512,
-                        num_inference_steps: int = 50,
-                        eta: float = 0.0,
-                        output_type: str = "latent",
-                        return_dict: bool = True) -> Union[Dict[str, Any], List[torch.Tensor]]:
+                         prompts: Union[str, List[str], List[List[str]]],
+                         cond_face_idx: Optional[int] = None,
+                         cond_face_image: Optional[torch.Tensor] = None,
+                         guidance_scale: float = 7.5,
+                         height: int = 512,
+                         width: int = 512,
+                         num_inference_steps: int = 50,
+                         eta: float = 0.0,
+                         output_type: str = "latent",
+                         return_dict: bool = True) -> Union[Dict[str, Any], List[torch.Tensor]]:
         device = self.device
 
-        if isinstance(prompts, str): prompts = [prompts] #noqa
+        if isinstance(prompts, str):
+            prompts = [prompts]
 
         batch_size = len(prompts)
 
@@ -364,7 +361,6 @@ class CubeDiff(nn.Module):
                 device=device
             )
 
-            # Set mask for conditional face
             for i in range(batch_size):
                 start_idx = i * self.num_frames + cond_face_idx
                 cond_face_mask[start_idx] = 1.0
@@ -387,8 +383,6 @@ class CubeDiff(nn.Module):
             eta=eta
         )
 
-        # Reorganize latents by face for easier processing
-        # From [B*F, C, H, W] to list of [B, C, H, W] tensors (one per face)
         face_latents = []
         for i in range(self.num_frames):
             face_batch = []
@@ -402,7 +396,6 @@ class CubeDiff(nn.Module):
             else:
                 return face_latents
 
-        # Decode all faces if needed for faces or equirectangular output
         decoded_faces = []
         for face_batch in face_latents:
             decoded_faces.append(self.vae.decode_from_latent(face_batch))
@@ -414,23 +407,16 @@ class CubeDiff(nn.Module):
                 return decoded_faces
 
         elif output_type == "equirectangular":
-            # Following cubemap standard: height = 2*face_height, width = 4*face_width
             panoramas = []
             for b in range(batch_size):
-                # Extract faces for this batch
                 batch_faces = [face[b:b+1] for face in decoded_faces]
-
-                # Stack faces into a cubemap tensor [1, 6, C, H, W]
                 cubemap = torch.stack(batch_faces, dim=1)
-
-                # Convert to equirectangular using CubeProjection
                 panorama = self.cubemap_utils.forward(
                     cubemap,
                     input_type='cubemap',
                     output_type='equirect'
                 )
-
-                panoramas.append(panorama[0])  # Remove batch dimension
+                panoramas.append(panorama[0])
 
             panoramas = torch.stack(panoramas)
 
@@ -442,64 +428,56 @@ class CubeDiff(nn.Module):
         else:
             raise ValueError(f"Unsupported output_type: {output_type}")
 
-
     def prepare_latents_for_training(self,
-                                   images: List[torch.Tensor],
-                                   timesteps: torch.Tensor,
-                                   noise: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-
+                                    images: List[torch.Tensor],
+                                    timesteps: torch.Tensor,
+                                    noise: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         with torch.no_grad():
             latent_faces = self.encode_faces(images)
 
         latents = torch.cat(latent_faces, dim=0)  # [B*6, 4, H/8, W/8]
 
-        # Apply noise
         if noise is None:
             noise = torch.randn_like(latents)
 
-        # Apply diffusion (noising process)
         noisy_latents = self.q_sample(latents, timesteps.repeat(self.num_frames), noise)
 
-        noisy_latents_with_pos = self.positional_encoding.add_positional_encoding_flat(noisy_latents)
+        # Apply positional encoding
+        pos_enc = self.positional_encoding.add_positional_encoding_flat(noisy_latents, num_frames=self.num_frames)
+        print("pos_enc shape:", pos_enc.shape)  # Debug: Should be [B*6, 2, H, W], e.g., [24, 2, 64, 64]
+        noisy_latents_with_pos = torch.cat([noisy_latents, pos_enc], dim=1)
+        print("noisy_latents_with_pos shape:", noisy_latents_with_pos.shape)  # Debug: Should be [B*6, 6, H, W], e.g., [24, 6, 64, 64]
         noisy_latents_projected = self.pos_projection(noisy_latents_with_pos)
+        print("noisy_latents_projected shape:", noisy_latents_projected.shape)  # Debug: Should be [B*6, 4, H, W], e.g., [24, 4, 64, 64]
 
         return noisy_latents_projected, latents, noise
 
     def forward(self,
                 batch: Dict[str, Any],
                 timesteps: Optional[torch.Tensor] = None) -> Dict[str, torch.Tensor]:
-        # Unpack batch
-        images = batch["faces"]  # List of 6 face images [B, 3, H, W]
-        text = batch["text"]  # Text prompts (can be single or per-face)
-
+        images = batch["faces"]
+        text = batch["text"]
         batch_size = images[0].shape[0]
         device = images[0].device
 
-        # Sample random timesteps if not provided
         if timesteps is None:
             timesteps = torch.randint(
                 0, self.num_train_timesteps, (batch_size,), device=device, dtype=torch.long
             )
 
-        # Prepare latents for training
         noisy_latents, original_latents, noise = self.prepare_latents_for_training(images, timesteps)
 
-        # Classifier-free guidance: randomly drop text conditioning
         use_text_cond = torch.rand(batch_size) >= self.config.classifier_free_guidance_prob
 
-        # Get text embeddings
         text_embeddings = self.get_text_embedding(text, batch_size)
         null_embeddings = self.get_null_embedding(batch_size)
 
-        # Create mixed embeddings based on dropout decision
         embeddings = text_embeddings.clone()
         for i in range(batch_size):
             if not use_text_cond[i]:
-                # Replace with null embedding for this batch item
                 for j in range(self.num_frames):
                     embeddings[i * self.num_frames + j] = null_embeddings[i * self.num_frames + j]
 
-        # Forward pass through UNet
         model_output = self.unet(
             sample=noisy_latents,
             timestep=timesteps,
@@ -509,38 +487,31 @@ class CubeDiff(nn.Module):
         if isinstance(model_output, dict):
             model_output = model_output["sample"]
 
-        # Compute loss based on prediction type
         if self.config.prediction_type == "v":
-            # Calculate v-prediction target
             target = self.compute_v_prediction(model_output, original_latents, timesteps.repeat(self.num_frames))
             loss = F.mse_loss(model_output, target)
         elif self.config.prediction_type == "epsilon":
-            # Predict noise
             loss = F.mse_loss(model_output, noise)
         else:
-            # Direct x0 prediction
             loss = F.mse_loss(model_output, original_latents)
 
         return {"loss": loss}
 
     def generate_per_face_prompts(self,
-                                prompt: str,
-                                num_samples: int = 1) -> List[List[str]]:
+                                 prompt: str,
+                                 num_samples: int = 1) -> List[List[str]]:
         return self.prompt_generator.generate_per_face_prompts(
             prompt=prompt,
             num_samples=num_samples
         )
 
     def save_pretrained(self, output_dir: str):
-
         os.makedirs(output_dir, exist_ok=True)
 
-        # Save UNet
         unet_dir = os.path.join(output_dir, "unet")
         os.makedirs(unet_dir, exist_ok=True)
         torch.save(self.unet.state_dict(), os.path.join(unet_dir, "pytorch_model.bin"))
 
-        # Save VAE (optional, as it's mostly unchanged except for GroupNorm)
         vae_dir = os.path.join(output_dir, "vae")
         os.makedirs(vae_dir, exist_ok=True)
         torch.save(self.vae.state_dict(), os.path.join(vae_dir, "pytorch_model.bin"))
@@ -550,18 +521,6 @@ class CubeDiff(nn.Module):
 
     @classmethod
     def from_pretrained(cls, pretrained_model_path: str, config=None, device=None, prompt_generator=None):
-        """
-        Load model from pretrained directory.
-
-        Args:
-            pretrained_model_path: Directory with pretrained model
-            config: Optional configuration object
-            device: Device to place model on
-            prompt_generator: Optional OllamaPromptGenerator
-
-        Returns:
-            Loaded CubeDiff model
-        """
         if config is None:
             config_path = os.path.join(pretrained_model_path, "config.json")
             if os.path.exists(config_path):
@@ -575,43 +534,36 @@ class CubeDiff(nn.Module):
             else:
                 config = CubeDiffConfig()
 
-        # Initialize model with prompt generator
         model = cls(config, device, prompt_generator)
 
-        # Load UNet weights
         unet_path = os.path.join(pretrained_model_path, "unet", "pytorch_model.bin")
         if os.path.exists(unet_path):
             model.unet.load_state_dict(torch.load(unet_path, map_location=model.device))
 
-        # Load VAE weights
         vae_path = os.path.join(pretrained_model_path, "vae", "pytorch_model.bin")
         if os.path.exists(vae_path):
             model.vae.load_state_dict(torch.load(vae_path, map_location=model.device))
 
         return model
 
-
     def fine_grained_generate(self,
-                            prompts: List[List[str]],
-                            cond_face_idx: Optional[int] = None,
-                            cond_face_image: Optional[torch.Tensor] = None,
-                            guidance_scale: float = 7.5,
-                            height: int = 512,
-                            width: int = 512,
-                            num_inference_steps: int = 50,
-                            eta: float = 0.0,
-                            output_type: str = "equirectangular",
-                            return_dict: bool = True) -> Union[Dict[str, Any], torch.Tensor]:
-        # Validate prompts format
+                             prompts: List[List[str]],
+                             cond_face_idx: Optional[int] = None,
+                             cond_face_image: Optional[torch.Tensor] = None,
+                             guidance_scale: float = 7.5,
+                             height: int = 512,
+                             width: int = 512,
+                             num_inference_steps: int = 50,
+                             eta: float = 0.0,
+                             output_type: str = "equirectangular",
+                             return_dict: bool = True) -> Union[Dict[str, Any], torch.Tensor]:
         if not isinstance(prompts, list) or not isinstance(prompts[0], list):
             raise ValueError("Prompts must be a list of lists, with one list per sample and 6 prompts per face")
 
-        # Ensure all prompt lists have 6 entries
         for sample_prompts in prompts:
             if len(sample_prompts) != 6:
                 raise ValueError(f"Each sample must have exactly 6 prompts, got {len(sample_prompts)}")
 
-        # Call normal generate function with per-face prompts
         return self.generate_panorama(
             prompts=prompts,
             cond_face_idx=cond_face_idx,
@@ -627,22 +579,10 @@ class CubeDiff(nn.Module):
 
     @torch.no_grad()
     def evaluate(self, eval_dataset, metrics=None, batch_size=1):
-        """
-        Evaluate model on dataset using specified metrics.
-
-        Args:
-            eval_dataset: Dataset for evaluation
-            metrics: List of metric functions to compute
-            batch_size: Batch size for evaluation
-
-        Returns:
-            Dictionary of metric results
-        """
         device = self.device
         self.eval()
 
         if metrics is None:
-
             metrics = {
                 "fid": FrechetInceptionDistance(feature=64).to(device),
                 "kid": KernelInceptionDistance(subset_size=100).to(device)
@@ -650,27 +590,20 @@ class CubeDiff(nn.Module):
 
         dataloader = DataLoader(eval_dataset, batch_size=batch_size, shuffle=False)
 
-        # Generate panoramas for all samples
         all_generated = []
         all_real = []
 
         for batch in tqdm(dataloader, desc="Evaluation"):
-            # Get real panoramas from batch
             real_faces = batch["faces"]
             real_faces = [face.to(device) for face in real_faces]
-
-            # Get text prompts
             text_prompts = batch.get("text", ["a panorama"] * batch_size)
 
-            # Generate panoramas
             generated = self.generate_panorama(
                 prompts=text_prompts,
                 output_type="equirectangular",
                 return_dict=True
             )
 
-            # Convert real faces to equirectangular
-            # Stack faces into a cubemap tensor [B, 6, C, H, W]
             real_cubemap = torch.stack([face for face in real_faces], dim=1)
             real_equirect = self.cubemap_utils.forward(
                 real_cubemap,
@@ -678,34 +611,26 @@ class CubeDiff(nn.Module):
                 output_type='equirect'
             )
 
-            # Add to lists for metric computation
             generated_pano = generated["panorama"]
-
-            # Convert to required format for metrics (usually uint8 [0, 255])
             generated_uint8 = (generated_pano * 255).to(torch.uint8)
             real_uint8 = (real_equirect * 255).to(torch.uint8)
 
             all_generated.append(generated_uint8)
             all_real.append(real_uint8)
 
-            # Update metrics directly if they have an update method
             for metric_name, metric in metrics.items():
                 if hasattr(metric, "update"):
                     metric.update(generated_uint8, real=False)
                     metric.update(real_uint8, real=True)
 
-        # Concatenate all samples if needed for global metrics
         all_generated = torch.cat(all_generated, dim=0)
         all_real = torch.cat(all_real, dim=0)
 
-        # Compute metrics
         results = {}
         for metric_name, metric in metrics.items():
             if hasattr(metric, "compute"):
-                # Use compute for torchmetrics
                 results[metric_name] = metric.compute()
             else:
-                # Assume function that takes generated and real as input
                 results[metric_name] = metric(all_generated, all_real)
 
         return results

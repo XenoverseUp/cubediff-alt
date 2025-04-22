@@ -41,7 +41,6 @@ class PositionalEncoding:
         return encodings
 
     def _compute_face_encoding(self, face_name: str, face_vector: np.ndarray) -> torch.Tensor:
-
         grid_x = np.linspace(-1, 1, self.cube_size)
         grid_y = np.linspace(-1, 1, self.cube_size)
         X, Y = np.meshgrid(grid_x, grid_y)
@@ -82,8 +81,8 @@ class PositionalEncoding:
         return encoding
 
     def get_positional_encoding(self,
-                              batch_size: int,
-                              device: torch.device) -> torch.Tensor:
+                               batch_size: int,
+                               device: torch.device) -> torch.Tensor:
         """
         Get positional encoding for all cubemap faces.
 
@@ -100,8 +99,8 @@ class PositionalEncoding:
             encoding = self.position_encodings[face_name].to(device)
             encodings_list.append(encoding)
 
-        encodings = torch.stack(encodings_list, dim=0)
-        encodings = encodings.unsqueeze(0).repeat(batch_size, 1, 1, 1, 1)
+        encodings = torch.stack(encodings_list, dim=0)  # [6, 2, H, W]
+        encodings = encodings.unsqueeze(0).repeat(batch_size, 1, 1, 1, 1)  # [B, 6, 2, H, W]
 
         return encodings
 
@@ -119,59 +118,40 @@ class PositionalEncoding:
         device = latents.device
 
         # Get positional encodings
-        encodings = self.get_positional_encoding(batch_size, device)
-
-        # Reshape encodings to match latents
-        encodings = encodings.reshape(batch_size, num_faces, 2, height, width)
+        encodings = self.get_positional_encoding(batch_size, device)  # [B, 6, 2, H, W]
 
         # Concatenate along channel dimension
-        latents_with_pos = torch.cat([latents, encodings], dim=2)
+        latents_with_pos = torch.cat([latents, encodings], dim=2)  # [B, 6, C+2, H, W]
 
         return latents_with_pos
 
     def add_positional_encoding_flat(self, latents: torch.Tensor, num_frames: int = 6) -> torch.Tensor:
         """
-        Add positional encoding to flattened latent representations.
+        Get positional encoding for flattened latent representations.
 
         Args:
-            latents: Latent tensor [B*6, C, H, W] or [B, 6*C, H, W]
+            latents: Latent tensor [B*6, C, H, W]
             num_frames: Number of frames (should be 6 for cubemap)
 
         Returns:
-            torch.Tensor: Latents with positional encoding [B*6, C+2, H, W] or [B, 6*(C+2), H, W]
+            torch.Tensor: Positional encoding [B*6, 2, H, W]
         """
-        if latents.shape[0] % num_frames == 0:
-            # Case [B*6, C, H, W]
-            batch_size = latents.shape[0] // num_frames
-            channels, height, width = latents.shape[1:]
+        if latents.shape[0] % num_frames != 0:
+            raise ValueError(f"Batch size {latents.shape[0]} must be divisible by num_frames {num_frames}")
 
-            # Reshape to [B, 6, C, H, W]
-            latents_reshaped = latents.reshape(batch_size, num_frames, channels, height, width)
+        batch_size = latents.shape[0] // num_frames
+        channels, height, width = latents.shape[1:]
 
-            # Add positional encoding
-            latents_with_pos = self.add_positional_encoding(latents_reshaped)
+        # Get positional encodings
+        encodings = self.get_positional_encoding(batch_size, device=latents.device)  # [B, 6, 2, H, W]
 
-            # Reshape back to [B*6, C+2, H, W]
-            return latents_with_pos.reshape(batch_size * num_frames, channels + 2, height, width)
+        # Reshape to [B*6, 2, H, W]
+        encodings_flat = encodings.reshape(batch_size * num_frames, 2, height, width)
 
-        else:
-            # Case [B, 6*C, H, W]
-            batch_size = latents.shape[0]
-            channels_total = latents.shape[1]
-            channels = channels_total // num_frames
-            height, width = latents.shape[2:]
-
-            # Reshape to [B, 6, C, H, W]
-            latents_reshaped = latents.reshape(batch_size, num_frames, channels, height, width)
-
-            # Add positional encoding
-            latents_with_pos = self.add_positional_encoding(latents_reshaped)
-
-            # Reshape back to [B, 6*(C+2), H, W]
-            return latents_with_pos.reshape(batch_size, num_frames * (channels + 2), height, width)
+        return encodings_flat
 
     def spatial_uv_encoding(self, batch_size: int, height: int, width: int,
-                         device: torch.device) -> torch.Tensor:
+                            device: torch.device) -> torch.Tensor:
         """
         Generate UV positional encoding for all spatial positions across all faces.
 

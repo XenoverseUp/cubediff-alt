@@ -9,9 +9,9 @@ from synchronized_norm import convert_groupnorm_to_synchronized
 
 class CubeDiffUNet(nn.Module):
     def __init__(self,
-                pretrained_model_path: str,
-                num_frames: int = 6,
-                device: Optional[torch.device] = None):
+                 pretrained_model_path: str,
+                 num_frames: int = 6,
+                 device: Optional[torch.device] = None):
         super().__init__()
 
         self.pretrained_model_path = pretrained_model_path
@@ -29,7 +29,7 @@ class CubeDiffUNet(nn.Module):
 
             self.time_embedding = unet.time_embedding
             self.time_proj = unet.time_proj
-            self.conv_in = nn.Conv2d(4, unet.conv_in.out_channels, kernel_size=3, padding=1)
+            self.conv_in = unet.conv_in  # Use pretrained conv_in directly
             self.down_blocks = unet.down_blocks
             self.mid_block = unet.mid_block
             self.up_blocks = unet.up_blocks
@@ -46,12 +46,12 @@ class CubeDiffUNet(nn.Module):
             raise RuntimeError(f"Failed to load pretrained UNet: {e}")
 
     def forward(self,
-               sample: torch.Tensor,
-               timestep: Union[torch.Tensor, float, int],
-               encoder_hidden_states: Optional[torch.Tensor] = None,
-               class_labels: Optional[torch.Tensor] = None,
-               attention_mask: Optional[torch.Tensor] = None,
-               return_dict: bool = True) -> Union[torch.Tensor, Dict[str, torch.Tensor]]:
+                sample: torch.Tensor,
+                timestep: Union[torch.Tensor, float, int],
+                encoder_hidden_states: Optional[torch.Tensor] = None,
+                class_labels: Optional[torch.Tensor] = None,
+                attention_mask: Optional[torch.Tensor] = None,
+                return_dict: bool = True) -> Union[torch.Tensor, Dict[str, torch.Tensor]]:
 
         # 1. Time embedding
         if not torch.is_tensor(timestep):
@@ -60,16 +60,17 @@ class CubeDiffUNet(nn.Module):
             timestep = timestep[None].to(sample.device)
 
         # Broadcast timestep to batch dimension
-        batch_size = sample.shape[0] // self.num_frames
-        timestep = timestep.expand(batch_size)
+        batch_size = sample.shape[0] // self.num_frames  # e.g., 24 // 6 = 4
+        timestep = timestep.expand(batch_size)  # [4]
 
-        t_emb = self.time_proj(timestep)
+        t_emb = self.time_proj(timestep)  # [4, dim]
+        temb = self.time_embedding(t_emb)  # [4, dim']
 
-        # Get time embedding
-        temb = self.time_embedding(t_emb)
+        # Repeat temb for each face to match effective batch size (B * num_frames)
+        temb = temb.repeat_interleave(self.num_frames, dim=0)  # [4, dim'] -> [24, dim']
 
         # 2. Process input sample
-        hidden_states = self.conv_in(sample)
+        hidden_states = self.conv_in(sample)  # [24, 4, 64, 64] -> [24, 320, 64, 64]
 
         # 3. Down blocks
         down_block_res_samples = []
@@ -92,8 +93,8 @@ class CubeDiffUNet(nn.Module):
 
         # 5. Up blocks
         for i, upsample_block in enumerate(self.up_blocks):
-            res_samples = down_block_res_samples[-len(upsample_block.resnets) :]
-            down_block_res_samples = down_block_res_samples[: -len(upsample_block.resnets)]
+            res_samples = down_block_res_samples[-len(upsample_block.resnets):]
+            down_block_res_samples = down_block_res_samples[:-len(upsample_block.resnets)]
 
             hidden_states = upsample_block(
                 hidden_states=hidden_states,
