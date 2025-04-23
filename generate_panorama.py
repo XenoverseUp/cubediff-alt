@@ -1,0 +1,168 @@
+import os
+import argparse
+import torch
+from torchvision import transforms
+from PIL import Image
+from pathlib import Path
+
+from model import CubeDiff
+from config import CubeDiffConfig
+from prompt_generator import OllamaPromptGenerator
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="CubeDiff Panorama Generation")
+    parser.add_argument("--checkpoint", type=str, required=True, help="Path to model checkpoint")
+    parser.add_argument("--output_dir", type=str, default="outputs/generated", help="Output directory")
+    parser.add_argument("--prompt", type=str, default=None, help="Text prompt for generation")
+    parser.add_argument("--input_image", type=str, default=None, help="Optional conditioning image")
+    parser.add_argument("--face_idx", type=int, default=0, help="Face index for conditioning (0-5)")
+    parser.add_argument("--multi_prompt", action='store_true', help="Generate per-face prompts")
+    parser.add_argument("--prompt_file", type=str, default=None, help="File with per-face prompts (one per line)")
+    parser.add_argument("--resolution", type=int, default=512, help="Output resolution per face")
+    parser.add_argument("--guidance_scale", type=float, default=7.5, help="Classifier-free guidance scale")
+    parser.add_argument("--num_steps", type=int, default=50, help="Number of sampling steps")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed")
+    parser.add_argument("--batch_size", type=int, default=1, help="Batch size for generation")
+    return parser.parse_args()
+
+def load_image(image_path, resolution):
+    image = Image.open(image_path).convert("RGB")
+    transform = transforms.Compose([
+        transforms.Resize((resolution, resolution)),
+        transforms.ToTensor()
+    ])
+    return transform(image).unsqueeze(0)  # Add batch dimension
+
+def save_cubemap_faces(faces, output_dir, prefix="face"):
+    os.makedirs(output_dir, exist_ok=True)
+    face_names = ["front", "right", "back", "left", "up", "down"]
+
+    for i, face in enumerate(faces):
+        face_img = face.squeeze(0).permute(1, 2, 0).cpu().numpy()
+        # Convert to uint8 (0-255)
+        face_img = (face_img * 255).astype('uint8')
+
+        # Save using PIL
+        face_pil = Image.fromarray(face_img)
+        face_path = os.path.join(output_dir, f"{prefix}_{face_names[i]}.png")
+        face_pil.save(face_path)
+        print(f"Saved face to {face_path}")
+
+def save_equirectangular(panorama, output_dir, prefix="panorama"):
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Convert to uint8 (0-255)
+    pano_img = panorama.squeeze(0).permute(1, 2, 0).cpu().numpy()
+    pano_img = (pano_img * 255).astype('uint8')
+
+    # Save using PIL
+    pano_pil = Image.fromarray(pano_img)
+    pano_path = os.path.join(output_dir, f"{prefix}.png")
+    pano_pil.save(pano_path)
+    print(f"Saved panorama to {pano_path}")
+
+def main():
+    args = parse_args()
+
+    # Create output directory
+    os.makedirs(args.output_dir, exist_ok=True)
+
+    # Set random seed
+    torch.manual_seed(args.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(args.seed)
+
+    # Determine device
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # Load model config if available, otherwise use defaults
+    config_path = os.path.join(args.checkpoint, "config.json")
+    if os.path.exists(config_path):
+        config = CubeDiffConfig.from_file(config_path)
+    else:
+        config = CubeDiffConfig(
+            cube_size=args.resolution,
+            fov=95.0,
+            overlap=2.5,
+            prediction_type="v"
+        )
+
+    # Load model
+    print(f"Loading model from {args.checkpoint}")
+    model = CubeDiff.from_pretrained(args.checkpoint, config, device)
+    model.eval()
+
+    # Prepare conditioning image if provided
+    cond_image = None
+    if args.input_image:
+        print(f"Loading conditioning image from {args.input_image}")
+        cond_image = load_image(args.input_image, args.resolution)
+        cond_image = cond_image.to(device)
+
+    # Prepare prompts
+    prompts = None
+    if args.prompt_file:
+        # Load per-face prompts from file
+        with open(args.prompt_file, 'r') as f:
+            face_prompts = [line.strip() for line in f.readlines()]
+        if len(face_prompts) != 6:
+            raise ValueError(f"Prompt file must contain exactly 6 prompts, got {len(face_prompts)}")
+        prompts = [face_prompts] * args.batch_size
+    elif args.multi_prompt and args.prompt:
+        # Generate per-face prompts from main prompt
+        prompt_generator = OllamaPromptGenerator()
+        prompts = prompt_generator.generate_per_face_prompts(
+            args.prompt, num_samples=args.batch_size
+        )
+    elif args.prompt:
+        # Use single prompt
+        prompts = [args.prompt] * args.batch_size
+    else:
+        prompts = ["A detailed panorama"] * args.batch_size
+
+    print(f"Using prompts: {prompts}")
+
+    # Generate panorama
+    with torch.no_grad():
+        if args.prompt_file or args.multi_prompt:
+            # Use fine-grained generation
+            print("Generating panorama with per-face prompts...")
+            output = model.fine_grained_generate(
+                prompts=prompts,
+                cond_face_idx=args.face_idx if cond_image is not None else None,
+                cond_face_image=cond_image,
+                guidance_scale=args.guidance_scale,
+                height=args.resolution,
+                width=args.resolution,
+                num_inference_steps=args.num_steps,
+                output_type="equirectangular",
+                return_dict=True
+            )
+        else:
+            # Use standard generation
+            print("Generating panorama...")
+            output = model.generate_panorama(
+                prompts=prompts,
+                cond_face_idx=args.face_idx if cond_image is not None else None,
+                cond_face_image=cond_image,
+                guidance_scale=args.guidance_scale,
+                height=args.resolution,
+                width=args.resolution,
+                num_inference_steps=args.num_steps,
+                output_type="equirectangular",
+                return_dict=True
+            )
+
+    # Save outputs
+    prefix = Path(args.input_image).stem if args.input_image else "generated"
+
+    # Save faces
+    save_cubemap_faces(output["faces"], args.output_dir, prefix=prefix)
+
+    # Save panorama
+    save_equirectangular(output["panorama"], args.output_dir, prefix=prefix)
+
+    print("Generation complete!")
+
+if __name__ == "__main__":
+    main()
