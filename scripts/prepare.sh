@@ -1,0 +1,1 @@
+python3 prepare_polyhaven.py

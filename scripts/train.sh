@@ -1,0 +1,15 @@
+accelerate launch --mixed_precision fp16 train.py \
+--data_dir polyhaven_dataset \
+--batch_size 4 \
+--num_workers 4 \
+--output_dir "outputs/polyhaven_training" \
+--cube_size 512 \
+--num_epochs 30 \
+--learning_rate 8e-5 \
+--gradient_accumulation_steps 4 \
+--save_steps 1000 \
+--eval_steps 500 \
+--log_steps 100 \
+--prediction_type v \
+--fov 95.0 \
+--overlap 2.5
