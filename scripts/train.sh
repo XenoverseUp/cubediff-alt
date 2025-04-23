@@ -14,7 +14,6 @@ PREDICTION_TYPE="v"
 FOV=95.0
 OVERLAP=2.5
 PRECISION="fp16"
-SEED=42
 
 # Parameter summary
 echo "==============================================="
@@ -54,7 +53,6 @@ accelerate launch --mixed_precision $PRECISION train.py \
   --prediction_type $PREDICTION_TYPE \
   --fov $FOV \
   --overlap $OVERLAP \
-  --seed $SEED
 
 TRAINING_STATUS=$?
 
