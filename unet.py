@@ -58,12 +58,12 @@ class CubeDiffUNet(nn.Module):
             raise RuntimeError(f"Failed to load pretrained UNet: {e}")
 
     def forward(self,
-                sample: torch.Tensor,
-                timestep: Union[torch.Tensor, float, int],
-                encoder_hidden_states: Optional[torch.Tensor] = None,
-                class_labels: Optional[torch.Tensor] = None,
-                attention_mask: Optional[torch.Tensor] = None,
-                return_dict: bool = True) -> Union[torch.Tensor, Dict[str, torch.Tensor]]:
+                    sample: torch.Tensor,
+                    timestep: Union[torch.Tensor, float, int],
+                    encoder_hidden_states: Optional[torch.Tensor] = None,
+                    class_labels: Optional[torch.Tensor] = None,
+                    attention_mask: Optional[torch.Tensor] = None,
+                    return_dict: bool = True) -> Union[torch.Tensor, Dict[str, torch.Tensor]]:
 
         # 1. Time embedding
         if not torch.is_tensor(timestep):
@@ -85,7 +85,10 @@ class CubeDiffUNet(nn.Module):
         hidden_states = self.conv_in(sample)  # [24, 4, 64, 64] -> [24, 320, 64, 64]
 
         # 3. Down blocks
-        down_block_res_samples = []
+        # Start with the input hidden state as the first residual sample
+        # This is exactly how the original SD implementation works
+        down_block_res_samples = [hidden_states]  # Start with the input as the first residual
+
         for downsample_block in self.down_blocks:
             hidden_states, res_samples = downsample_block(
                 hidden_states=hidden_states,
@@ -93,6 +96,7 @@ class CubeDiffUNet(nn.Module):
                 encoder_hidden_states=encoder_hidden_states,
                 attention_mask=attention_mask
             )
+            # Collect all residual samples
             down_block_res_samples.extend(res_samples)
 
         # 4. Mid block
@@ -105,8 +109,10 @@ class CubeDiffUNet(nn.Module):
 
         # 5. Up blocks
         for i, upsample_block in enumerate(self.up_blocks):
-            print(f"Up Block {i}: len(down_block_res_samples) = {len(down_block_res_samples)}, expecting {len(upsample_block.resnets)}") # DEBUG LINE
+            # Take exactly the number of residual samples that this up block has ResNets
+            # This matches the original SD implementation exactly
             res_samples = down_block_res_samples[-len(upsample_block.resnets):]
+            # Remove these samples from our list
             down_block_res_samples = down_block_res_samples[:-len(upsample_block.resnets)]
 
             hidden_states = upsample_block(
@@ -126,6 +132,7 @@ class CubeDiffUNet(nn.Module):
             return hidden_states
 
         return {"sample": hidden_states}
+
 
     def process_cubemap_batch(self,
                              latents: List[torch.Tensor],
