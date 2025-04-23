@@ -40,7 +40,7 @@ echo "==============================================="
 echo "Starting training..."
 echo ""
 
-accelerate launch --mixed_precision $PRECISION train_epoch_logging.py \
+accelerate launch --mixed_precision $PRECISION train.py \
   --data_dir $DATA_DIR \
   --batch_size $BATCH_SIZE \
   --num_workers $NUM_WORKERS \
