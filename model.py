@@ -444,11 +444,8 @@ class CubeDiff(nn.Module):
 
         # Apply positional encoding
         pos_enc = self.positional_encoding.add_positional_encoding_flat(noisy_latents, num_frames=self.num_frames)
-        print("pos_enc shape:", pos_enc.shape)  # Debug: Should be [B*6, 2, H, W], e.g., [24, 2, 64, 64]
         noisy_latents_with_pos = torch.cat([noisy_latents, pos_enc], dim=1)
-        print("noisy_latents_with_pos shape:", noisy_latents_with_pos.shape)  # Debug: Should be [B*6, 6, H, W], e.g., [24, 6, 64, 64]
         noisy_latents_projected = self.pos_projection(noisy_latents_with_pos)
-        print("noisy_latents_projected shape:", noisy_latents_projected.shape)  # Debug: Should be [B*6, 4, H, W], e.g., [24, 4, 64, 64]
 
         return noisy_latents_projected, latents, noise
 

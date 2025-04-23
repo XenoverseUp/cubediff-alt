@@ -43,17 +43,6 @@ class CubeDiffUNet(nn.Module):
             convert_groupnorm_to_synchronized(self, self.num_frames)
             convert_attention_to_inflated(self, self.num_frames)
 
-            print("Down Blocks Structure:")
-            for i, block in enumerate(self.down_blocks):
-                print(f"  Down Block {i}: Type={type(block)}, Num Resnets={len(block.resnets) if hasattr(block, 'resnets') else 'N/A'}")
-
-            print("\\nMid Block Structure:")
-            print(f"  Mid Block: Type={type(self.mid_block)}, Num Resnets={len(self.mid_block.resnets) if hasattr(self.mid_block, 'resnets') else 'N/A'}")
-
-            print("\\nUp Blocks Structure:")
-            for i, block in enumerate(self.up_blocks):
-                print(f"  Up Block {i}: Type={type(block)}, Num Resnets={len(block.resnets) if hasattr(block, 'resnets') else 'N/A'}")
-
         except Exception as e:
             raise RuntimeError(f"Failed to load pretrained UNet: {e}")
 
