@@ -223,6 +223,8 @@ class CubeProjection(nn.Module):
     ) -> torch.Tensor:
         """
         Convert a cubemap representation to an equirectangular panorama.
+        Simplified implementation that processes the entire equirectangular image
+        for each face, which is less efficient but more robust.
 
         Args:
             cubemap: Tensor of shape (B, 6, C, H, W) with cubemap faces
@@ -232,71 +234,89 @@ class CubeProjection(nn.Module):
         Returns:
             Tensor of shape (B, C, height, width) with equirectangular panoramas
         """
-        B, _, C, face_h, face_w = cubemap.shape
+        B, num_faces, C, face_h, face_w = cubemap.shape
         device = cubemap.device
 
         equirect = torch.zeros(B, C, height, width, device=device)
 
-        u = torch.linspace(-1, 1, width).to(device)
-        v = torch.linspace(-1, 1, height).to(device)
-        grid_v, grid_u = torch.meshgrid(v, u, indexing='ij')
-        grid = torch.stack([grid_u, grid_v], dim=-1)
-        dirs = self.equirect_to_sphere(grid)
+        # Create coordinate grid for equirectangular image
+        u_coords = torch.linspace(-1, 1, width, device=device)
+        v_coords = torch.linspace(-1, 1, height, device=device)
+        grid_v, grid_u = torch.meshgrid(v_coords, u_coords, indexing='ij')
 
-        x, y, z = dirs[..., 0], dirs[..., 1], dirs[..., 2]
+        # Convert to spherical coordinates
+        # Longitude (azimuth angle), -π to π
+        longitude = grid_u * math.pi
+        # Latitude (elevation angle), -π/2 to π/2
+        latitude = grid_v * (math.pi / 2)
 
-        eps = 1e-6
-        abs_x, abs_y, abs_z = torch.abs(x), torch.abs(y), torch.abs(z)
+        # Convert to 3D coordinates on unit sphere
+        x = torch.cos(latitude) * torch.sin(longitude)
+        y = torch.sin(latitude)
+        z = torch.cos(latitude) * torch.cos(longitude)
 
-        face_masks = [
-            (z > abs_x - eps) & (z > abs_y - eps),      # (+Z)
-            (x > abs_z - eps) & (x > abs_y - eps),      # (+X)
-            (-z > abs_x - eps) & (-z > abs_y - eps),    # (-Z)
-            (-x > abs_z - eps) & (-x > abs_y - eps),    # (-X)
-            (y > abs_x - eps) & (y > abs_z - eps),      # (+Y)
-            (-y > abs_x - eps) & (-y > abs_z - eps),    # (-Y)
-        ]
+        # Process each batch
+        for b in range(B):
+            # Create face masks
+            eps = 1e-6
+            masks = [
+                (z > 0) & (z >= torch.abs(x) - eps) & (z >= torch.abs(y) - eps),  # front (+Z)
+                (x > 0) & (x >= torch.abs(z) - eps) & (x >= torch.abs(y) - eps),  # right (+X)
+                (z < 0) & (-z >= torch.abs(x) - eps) & (-z >= torch.abs(y) - eps),  # back (-Z)
+                (x < 0) & (-x >= torch.abs(z) - eps) & (-x >= torch.abs(y) - eps),  # left (-X)
+                (y > 0) & (y >= torch.abs(x) - eps) & (y >= torch.abs(z) - eps),  # up (+Y)
+                (y < 0) & (-y >= torch.abs(x) - eps) & (-y >= torch.abs(z) - eps),  # down (-Y)
+            ]
 
-        for face_idx in range(6):
-            mask = face_masks[face_idx]
-            if not mask.any():
-                continue
+            # Process each face
+            for face_idx, mask in enumerate(masks):
+                if not mask.any():
+                    continue
 
-            face_dirs = dirs[mask]
+                # Compute face UVs based on face index
+                if face_idx == 0:  # front
+                    u_face = x / z
+                    v_face = y / z
+                elif face_idx == 1:  # right
+                    u_face = -z / x
+                    v_face = y / x
+                elif face_idx == 2:  # back
+                    u_face = -x / z
+                    v_face = y / z
+                elif face_idx == 3:  # left
+                    u_face = z / x
+                    v_face = y / x
+                elif face_idx == 4:  # up
+                    u_face = x / y
+                    v_face = -z / y
+                elif face_idx == 5:  # down
+                    u_face = x / y
+                    v_face = z / y
 
-            if face_idx == self.FRONT_FACE:
-                face_u = face_dirs[..., 0] / face_dirs[..., 2]
-                face_v = face_dirs[..., 1] / face_dirs[..., 2]
-            elif face_idx == self.RIGHT_FACE:
-                face_u = -face_dirs[..., 2] / face_dirs[..., 0]
-                face_v = face_dirs[..., 1] / face_dirs[..., 0]
-            elif face_idx == self.BACK_FACE:
-                face_u = -face_dirs[..., 0] / face_dirs[..., 2]
-                face_v = face_dirs[..., 1] / face_dirs[..., 2]
-            elif face_idx == self.LEFT_FACE:
-                face_u = face_dirs[..., 2] / face_dirs[..., 0]
-                face_v = face_dirs[..., 1] / face_dirs[..., 0]
-            elif face_idx == self.TOP_FACE:
-                face_u = face_dirs[..., 0] / face_dirs[..., 1]
-                face_v = -face_dirs[..., 2] / face_dirs[..., 1]
-            elif face_idx == self.BOTTOM_FACE:
-                face_u = face_dirs[..., 0] / face_dirs[..., 1]
-                face_v = face_dirs[..., 2] / face_dirs[..., 1]
+                # Create sampling grid for the entire output
+                grid = torch.zeros(height, width, 2, device=device)
 
-            face_grid = torch.stack([face_u, face_v], dim=-1)
+                # Only set values for pixels belonging to this face
+                grid[mask, 0] = u_face[mask]
+                grid[mask, 1] = v_face[mask]
 
-            for b in range(B):
-                b_grid = face_grid.unsqueeze(0)
+                # Add batch dimension
+                grid = grid.unsqueeze(0)  # [1, H, W, 2]
 
-                pixels = F.grid_sample(
-                    cubemap[b, face_idx].unsqueeze(0),
-                    b_grid,
+                # Sample from the face
+                face_data = cubemap[b, face_idx].unsqueeze(0)  # [1, C, H, W]
+
+                # Use grid_sample only for the region covered by this face
+                face_output = F.grid_sample(
+                    face_data,
+                    grid,
                     mode='bilinear',
                     padding_mode='border',
                     align_corners=True
-                )
+                )  # [1, C, H, W]
 
-                equirect[b, :, mask] = pixels.squeeze(0).squeeze(2)
+                # Update the equirectangular output only for pixels in the mask
+                equirect[b, :, mask] = face_output[0, :, mask]
 
         return equirect
 
