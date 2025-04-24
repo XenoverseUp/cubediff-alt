@@ -191,13 +191,13 @@ class CubeProjection(nn.Module):
         for face_idx in range(6):
             # Generate sampling grid for this face
             grid = self.generate_sampling_grid(face_size, face_size, fov_degrees).to(device)
-            
+
             # Convert grid coordinates to 3D directions
             dirs = self.cube_to_sphere(face_idx, grid)
-            
+
             # Convert 3D directions to equirectangular coordinates
             eq_grid = self.sphere_to_equirect(dirs, H, W)
-            
+
             # Reshape grid to match the expected format for grid_sample
             # From (H, W, 2) to (B, H, W, 2)
             eq_grid = eq_grid.unsqueeze(0).repeat(B, 1, 1, 1)
@@ -232,7 +232,7 @@ class CubeProjection(nn.Module):
         Returns:
             Tensor of shape (B, C, height, width) with equirectangular panoramas
         """
-        B, F, C, face_h, face_w = cubemap.shape
+        B, _, C, face_h, face_w = cubemap.shape
         device = cubemap.device
 
         equirect = torch.zeros(B, C, height, width, device=device)
