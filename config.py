@@ -1,4 +1,5 @@
 import os
+import json
 
 class CubeDiffConfig:
     def __init__(self, **kwargs):
@@ -62,7 +63,7 @@ class CubeDiffConfig:
         self.local_rank = 0
         self.world_size = 1
         self.distributed = False
-        
+
         # Update with provided parameters
         self.update(**kwargs)
 
@@ -79,6 +80,13 @@ class CubeDiffConfig:
                 setattr(self, key, value)
             else:
                 raise ValueError(f"Invalid parameter: {key}")
+
+    def update_from_file(self, config_path):
+        with open(config_path, 'r') as f:
+            config_dict = json.load(f)
+        for key, value in config_dict.items():
+            if hasattr(self, key):
+                setattr(self, key, value)
 
     def __str__(self):
         """String representation of config"""

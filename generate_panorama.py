@@ -4,10 +4,10 @@ import torch
 from torchvision import transforms
 from PIL import Image
 from pathlib import Path
+import gc
 
 from model import CubeDiff
 from config import CubeDiffConfig
-from prompt_generator import OllamaPromptGenerator
 
 def parse_args():
     parser = argparse.ArgumentParser(description="CubeDiff Panorama Generation")
@@ -16,13 +16,12 @@ def parse_args():
     parser.add_argument("--prompt", type=str, default=None, help="Text prompt for generation")
     parser.add_argument("--input_image", type=str, default=None, help="Optional conditioning image")
     parser.add_argument("--face_idx", type=int, default=0, help="Face index for conditioning (0-5)")
-    parser.add_argument("--multi_prompt", action='store_true', help="Generate per-face prompts")
-    parser.add_argument("--prompt_file", type=str, default=None, help="File with per-face prompts (one per line)")
     parser.add_argument("--resolution", type=int, default=512, help="Output resolution per face")
     parser.add_argument("--guidance_scale", type=float, default=7.5, help="Classifier-free guidance scale")
     parser.add_argument("--num_steps", type=int, default=50, help="Number of sampling steps")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
-    parser.add_argument("--batch_size", type=int, default=1, help="Batch size for generation")
+    parser.add_argument("--use_cpu", action="store_true", help="Use CPU for initial loading")
+    parser.add_argument("--half_precision", action="store_true", help="Use half precision (float16)")
     return parser.parse_args()
 
 def load_image(image_path, resolution):
@@ -72,13 +71,19 @@ def main():
     if torch.cuda.is_available():
         torch.cuda.manual_seed(args.seed)
 
+    # Free CUDA memory if available
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        gc.collect()
+
     # Determine device
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cpu" if args.use_cpu else ("cuda" if torch.cuda.is_available() else "cpu"))
 
     # Load model config if available, otherwise use defaults
     config_path = os.path.join(args.checkpoint, "config.json")
     if os.path.exists(config_path):
-        config = CubeDiffConfig.from_file(config_path)
+        config = CubeDiffConfig()
+        config.update_from_file(config_path)
     else:
         config = CubeDiffConfig(
             cube_size=args.resolution,
@@ -87,9 +92,41 @@ def main():
             prediction_type="v"
         )
 
-    # Load model
-    print(f"Loading model from {args.checkpoint}")
-    model = CubeDiff.from_pretrained(args.checkpoint, config, device)
+    # Load model with special options to save memory
+    print(f"Loading model from {args.checkpoint} to {device}")
+
+    # Memory-efficient loading
+    load_device = torch.device("cpu") if args.use_cpu else device
+    unet_path = os.path.join(args.checkpoint, "unet", "pytorch_model.bin")
+    vae_path = os.path.join(args.checkpoint, "vae", "pytorch_model.bin")
+
+    model = CubeDiff(config=config, device=load_device)
+
+    print("Loading UNet...")
+    # Load with weights_only=True to save memory
+    unet_state_dict = torch.load(unet_path, map_location=load_device, weights_only=True)
+    model.unet.load_state_dict(unet_state_dict)
+    del unet_state_dict
+    torch.cuda.empty_cache()
+    gc.collect()
+
+    print("Loading VAE...")
+    # Load with weights_only=True to save memory
+    vae_state_dict = torch.load(vae_path, map_location=load_device, weights_only=True)
+    model.vae.load_state_dict(vae_state_dict)
+    del vae_state_dict
+    torch.cuda.empty_cache()
+    gc.collect()
+
+    # Convert to half precision if requested
+    if args.half_precision:
+        model = model.half()
+
+    # If initially loaded to CPU, now move to GPU
+    if args.use_cpu and torch.cuda.is_available():
+        print("Moving model to GPU for inference...")
+        model = model.to(device)
+
     model.eval()
 
     # Prepare conditioning image if provided
@@ -98,60 +135,31 @@ def main():
         print(f"Loading conditioning image from {args.input_image}")
         cond_image = load_image(args.input_image, args.resolution)
         cond_image = cond_image.to(device)
+        if args.half_precision:
+            cond_image = cond_image.half()
 
-    # Prepare prompts
-    prompts = None
-    if args.prompt_file:
-        # Load per-face prompts from file
-        with open(args.prompt_file, 'r') as f:
-            face_prompts = [line.strip() for line in f.readlines()]
-        if len(face_prompts) != 6:
-            raise ValueError(f"Prompt file must contain exactly 6 prompts, got {len(face_prompts)}")
-        prompts = [face_prompts] * args.batch_size
-    elif args.multi_prompt and args.prompt:
-        # Generate per-face prompts from main prompt
-        prompt_generator = OllamaPromptGenerator()
-        prompts = prompt_generator.generate_per_face_prompts(
-            args.prompt, num_samples=args.batch_size
-        )
-    elif args.prompt:
-        # Use single prompt
-        prompts = [args.prompt] * args.batch_size
+    # Prepare prompt
+    if args.prompt:
+        prompt = args.prompt
     else:
-        prompts = ["A detailed panorama"] * args.batch_size
+        prompt = "A detailed panorama"
 
-    print(f"Using prompts: {prompts}")
+    print(f"Using prompt: {prompt}")
 
     # Generate panorama
     with torch.no_grad():
-        if args.prompt_file or args.multi_prompt:
-            # Use fine-grained generation
-            print("Generating panorama with per-face prompts...")
-            output = model.fine_grained_generate(
-                prompts=prompts,
-                cond_face_idx=args.face_idx if cond_image is not None else None,
-                cond_face_image=cond_image,
-                guidance_scale=args.guidance_scale,
-                height=args.resolution,
-                width=args.resolution,
-                num_inference_steps=args.num_steps,
-                output_type="equirectangular",
-                return_dict=True
-            )
-        else:
-            # Use standard generation
-            print("Generating panorama...")
-            output = model.generate_panorama(
-                prompts=prompts,
-                cond_face_idx=args.face_idx if cond_image is not None else None,
-                cond_face_image=cond_image,
-                guidance_scale=args.guidance_scale,
-                height=args.resolution,
-                width=args.resolution,
-                num_inference_steps=args.num_steps,
-                output_type="equirectangular",
-                return_dict=True
-            )
+        print("Generating panorama...")
+        output = model.generate_panorama(
+            prompts=[prompt],
+            cond_face_idx=args.face_idx if cond_image is not None else None,
+            cond_face_image=cond_image,
+            guidance_scale=args.guidance_scale,
+            height=args.resolution,
+            width=args.resolution,
+            num_inference_steps=args.num_steps,
+            output_type="equirectangular",
+            return_dict=True
+        )
 
     # Save outputs
     prefix = Path(args.input_image).stem if args.input_image else "generated"

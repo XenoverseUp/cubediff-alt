@@ -1,7 +1,7 @@
 #!/bin/bash
 
 DATA_DIR="polyhaven_dataset"
-BATCH_SIZE=4
+BATCH_SIZE=2
 NUM_WORKERS=4
 OUTPUT_DIR="outputs/polyhaven_training"
 CUBE_SIZE=512

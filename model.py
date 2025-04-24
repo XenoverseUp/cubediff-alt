@@ -92,9 +92,17 @@ class CubeDiff(nn.Module):
         )
 
     def _extract_into_tensor(self, a, t, x_shape):
+        device = t.device
+        a = a.to(device)
+
+        if t.dim() == 0:
+            t = t.view(1)
+
         batch_size = t.shape[0]
-        out = a.to(t.device).gather(-1, t)
-        return out.reshape(batch_size, *((1,) * (len(x_shape) - 1)))
+
+        out = a.gather(-1, t)
+        out_dims = (batch_size,) + (1,) * (len(x_shape) - 1)
+        return out.reshape(out_dims)
 
     def encode_faces(self, faces: List[torch.Tensor]) -> List[torch.Tensor]:
         return self.vae.encode_cubemap(faces)

@@ -23,7 +23,7 @@ class SynchronizedGroupNorm2d(nn.GroupNorm):
 
         if batch_frames % self.num_frames == 0:
             batch_size = batch_frames // self.num_frames
-            
+
             # Handle both 3D and 4D tensors
             if len(x.shape) == 3:
                 # For 3D tensors [B*F, C, L]
@@ -65,7 +65,6 @@ class SynchronizedGroupNorm2d(nn.GroupNorm):
                 return x_out
 
             except Exception as e:
-                # Fallback to standard group norm if synchronized norm fails
                 return super().forward(x)
         else:
             # Fallback to standard group norm if batch size is not divisible by num_frames
