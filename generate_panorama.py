@@ -22,6 +22,7 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--use_cpu", action="store_true", help="Use CPU for inference")
     parser.add_argument("--half_precision", action="store_true", help="Use half precision (float16)")
+    parser.add_argument("--skip_equirect", action="store_true", help="Skip equirectangular conversion")
     return parser.parse_args()
 
 def load_image(image_path, resolution):
@@ -49,6 +50,10 @@ def save_cubemap_faces(faces, output_dir, prefix="face"):
 
 def save_equirectangular(panorama, output_dir, prefix="panorama"):
     os.makedirs(output_dir, exist_ok=True)
+
+    if panorama is None:
+        print("No panorama to save (equirectangular conversion was skipped)")
+        return
 
     # Convert to uint8 (0-255)
     pano_img = panorama.squeeze(0).permute(1, 2, 0).cpu().numpy()
@@ -165,6 +170,7 @@ def main():
                 width=args.resolution,
                 num_inference_steps=args.num_steps,
                 output_type="equirectangular",
+                skip_equirect=args.skip_equirect,
                 return_dict=True
             )
 
@@ -174,8 +180,9 @@ def main():
             # Save faces
             save_cubemap_faces(output["faces"], args.output_dir, prefix=prefix)
 
-            # Save panorama
-            save_equirectangular(output["panorama"], args.output_dir, prefix=prefix)
+            # Save panorama if available
+            if "panorama" in output and output["panorama"] is not None:
+                save_equirectangular(output["panorama"], args.output_dir, prefix=prefix)
 
             print("Generation complete!")
 

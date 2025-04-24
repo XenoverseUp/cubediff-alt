@@ -356,6 +356,7 @@ class CubeDiff(nn.Module):
                          num_inference_steps: int = 50,
                          eta: float = 0.0,
                          output_type: str = "latent",
+                         skip_equirect: bool = False,  # Add this parameter
                          return_dict: bool = True) -> Union[Dict[str, Any], List[torch.Tensor]]:
         device = self.device
 
@@ -439,27 +440,43 @@ class CubeDiff(nn.Module):
                 return decoded_faces
 
         elif output_type == "equirectangular":
+            # Skip equirectangular conversion if requested
+            if skip_equirect:
+                if return_dict:
+                    return {"faces": decoded_faces, "panorama": None}
+                else:
+                    return decoded_faces
+
             # Ensure cubemap_utils is on the right device
             self.cubemap_utils = self.cubemap_utils.to(device)
 
-            panoramas = []
-            for b in range(batch_size):
-                batch_faces = [face[b:b+1] for face in decoded_faces]
-                cubemap = torch.stack(batch_faces, dim=1)
-                panorama = self.cubemap_utils.forward(
-                    cubemap,
-                    input_type='cubemap',
-                    output_type='equirect'
-                )
-                panoramas.append(panorama[0])
+            try:
+                panoramas = []
+                for b in range(batch_size):
+                    batch_faces = [face[b:b+1] for face in decoded_faces]
+                    cubemap = torch.stack(batch_faces, dim=1)
 
-            panoramas = torch.stack(panoramas)
+                    # Use the basic stitching method for now
+                    panorama = self.cubemap_utils.forward(
+                        cubemap,
+                        input_type='cubemap',
+                        output_type='equirect'
+                    )
+                    panoramas.append(panorama[0])
 
-            if return_dict:
-                return {"panorama": panoramas, "faces": decoded_faces}
-            else:
-                return panoramas
+                panoramas = torch.stack(panoramas)
 
+                if return_dict:
+                    return {"panorama": panoramas, "faces": decoded_faces}
+                else:
+                    return panoramas
+            except Exception as e:
+                print(f"Error converting to equirectangular: {e}")
+                # Fall back to just returning the faces
+                if return_dict:
+                    return {"faces": decoded_faces, "panorama": None}
+                else:
+                    return decoded_faces
         else:
             raise ValueError(f"Unsupported output_type: {output_type}")
 
