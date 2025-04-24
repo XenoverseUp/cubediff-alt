@@ -223,8 +223,7 @@ class CubeProjection(nn.Module):
     ) -> torch.Tensor:
         """
         Convert a cubemap representation to an equirectangular panorama.
-        Simplified implementation that processes the entire equirectangular image
-        for each face, which is less efficient but more robust.
+        Final implementation that handles indexing correctly.
 
         Args:
             cubemap: Tensor of shape (B, 6, C, H, W) with cubemap faces
@@ -237,6 +236,7 @@ class CubeProjection(nn.Module):
         B, num_faces, C, face_h, face_w = cubemap.shape
         device = cubemap.device
 
+        # Initialize output equirectangular image
         equirect = torch.zeros(B, C, height, width, device=device)
 
         # Create coordinate grid for equirectangular image
@@ -273,40 +273,42 @@ class CubeProjection(nn.Module):
                 if not mask.any():
                     continue
 
+                # Get indices where mask is True
+                mask_indices = torch.nonzero(mask, as_tuple=True)
+                h_indices, w_indices = mask_indices
+
                 # Compute face UVs based on face index
                 if face_idx == 0:  # front
-                    u_face = x / z
-                    v_face = y / z
+                    u_face = x[mask] / z[mask]
+                    v_face = y[mask] / z[mask]
                 elif face_idx == 1:  # right
-                    u_face = -z / x
-                    v_face = y / x
+                    u_face = -z[mask] / x[mask]
+                    v_face = y[mask] / x[mask]
                 elif face_idx == 2:  # back
-                    u_face = -x / z
-                    v_face = y / z
+                    u_face = -x[mask] / z[mask]
+                    v_face = y[mask] / z[mask]
                 elif face_idx == 3:  # left
-                    u_face = z / x
-                    v_face = y / x
+                    u_face = z[mask] / x[mask]
+                    v_face = y[mask] / x[mask]
                 elif face_idx == 4:  # up
-                    u_face = x / y
-                    v_face = -z / y
+                    u_face = x[mask] / y[mask]
+                    v_face = -z[mask] / y[mask]
                 elif face_idx == 5:  # down
-                    u_face = x / y
-                    v_face = z / y
+                    u_face = x[mask] / y[mask]
+                    v_face = z[mask] / y[mask]
 
                 # Create sampling grid for the entire output
-                grid = torch.zeros(height, width, 2, device=device)
+                grid = torch.zeros(1, height, width, 2, device=device)
 
-                # Only set values for pixels belonging to this face
-                grid[mask, 0] = u_face[mask]
-                grid[mask, 1] = v_face[mask]
-
-                # Add batch dimension
-                grid = grid.unsqueeze(0)  # [1, H, W, 2]
+                # Set values for pixels belonging to this face
+                for i in range(len(h_indices)):
+                    grid[0, h_indices[i], w_indices[i], 0] = u_face[i]
+                    grid[0, h_indices[i], w_indices[i], 1] = v_face[i]
 
                 # Sample from the face
                 face_data = cubemap[b, face_idx].unsqueeze(0)  # [1, C, H, W]
 
-                # Use grid_sample only for the region covered by this face
+                # Use grid_sample
                 face_output = F.grid_sample(
                     face_data,
                     grid,
@@ -316,9 +318,11 @@ class CubeProjection(nn.Module):
                 )  # [1, C, H, W]
 
                 # Update the equirectangular output only for pixels in the mask
-                equirect[b, :, mask] = face_output[0, :, mask]
+                for i in range(len(h_indices)):
+                    equirect[b, :, h_indices[i], w_indices[i]] = face_output[0, :, h_indices[i], w_indices[i]]
 
         return equirect
+
 
     def crop_overlapping_regions(
         self,
