@@ -270,18 +270,29 @@ class CubeDiff(nn.Module):
         device = self.device
         batch_size = shape[0] // self.num_frames  # Effective batch size (e.g., 24 // 6 = 4)
 
+        # Ensure everything is on the same device
         latents = torch.randn(shape, device=device)
 
         if cond_face_latent is not None and cond_face_mask is not None:
+            cond_face_latent = cond_face_latent.to(device)
+            cond_face_mask = cond_face_mask.to(device)
             latents = latents * (1 - cond_face_mask) + cond_face_latent * cond_face_mask
 
+        # Move tensors to device
         timesteps = torch.linspace(self.num_train_timesteps - 1, 0, ddim_steps, device=device).long()
-
         alphas_cumprod = self.alphas_cumprod.to(device)
         sqrt_one_minus_alphas_cumprod = self.sqrt_one_minus_alphas_cumprod.to(device)
 
+        # Ensure UNet components are on the correct device
+        self.unet = self.unet.to(device)
+        if hasattr(self.unet, 'time_embedding'):
+            self.unet.time_embedding = self.unet.time_embedding.to(device)
+        if hasattr(self.unet, 'time_proj'):
+            self.unet.time_proj = self.unet.time_proj.to(device)
+
         for i, t in enumerate(tqdm(timesteps, desc="DDIM Sampling")):
-            timestep = t.expand(batch_size)
+            # Convert timestep to tensor and move to device
+            timestep = t.expand(batch_size).to(device)
 
             # For classifier-free guidance: do 2 forward passes
             latent_model_input = torch.cat([latents] * 2) if guidance_scale > 1.0 else latents
@@ -292,9 +303,9 @@ class CubeDiff(nn.Module):
             latent_model_input_projected = self.pos_projection(latent_model_input_with_pos)
 
             if guidance_scale > 1.0:
-                embeddings = torch.cat([uncond_embeddings, text_embeddings], dim=0)
+                embeddings = torch.cat([uncond_embeddings, text_embeddings], dim=0).to(device)
             else:
-                embeddings = text_embeddings
+                embeddings = text_embeddings.to(device)
 
             noise_pred = self.unet(
                 sample=latent_model_input_projected,
@@ -333,6 +344,7 @@ class CubeDiff(nn.Module):
 
         return latents
 
+
     @torch.no_grad()
     def generate_panorama(self,
                          prompts: Union[str, List[str], List[List[str]]],
@@ -352,13 +364,18 @@ class CubeDiff(nn.Module):
 
         batch_size = len(prompts)
 
-        text_embeddings = self.get_text_embedding(prompts, batch_size)
-        uncond_embeddings = self.get_null_embedding(batch_size)
+        # Ensure model is on the correct device
+        self.to(device)
+
+        # Get text embeddings and ensure they're on the right device
+        text_embeddings = self.get_text_embedding(prompts, batch_size).to(device)
+        uncond_embeddings = self.get_null_embedding(batch_size).to(device)
 
         cond_face_latent = None
         cond_face_mask = None
 
         if cond_face_image is not None and cond_face_idx is not None:
+            cond_face_image = cond_face_image.to(device)
             cond_face_latent = self.vae.encode_to_latent(cond_face_image)
 
             cond_face_mask = torch.zeros(
@@ -379,6 +396,10 @@ class CubeDiff(nn.Module):
             height // 8,
             width // 8
         )
+
+        # Make sure positional_encoding and pos_projection are on the right device
+        self.positional_encoding = self.positional_encoding.to(device)
+        self.pos_projection = self.pos_projection.to(device)
 
         latents = self.ddim_sample(
             shape=latent_shape,
@@ -404,6 +425,9 @@ class CubeDiff(nn.Module):
             else:
                 return face_latents
 
+        # Ensure VAE is on the correct device
+        self.vae = self.vae.to(device)
+
         decoded_faces = []
         for face_batch in face_latents:
             decoded_faces.append(self.vae.decode_from_latent(face_batch))
@@ -415,6 +439,9 @@ class CubeDiff(nn.Module):
                 return decoded_faces
 
         elif output_type == "equirectangular":
+            # Ensure cubemap_utils is on the right device
+            self.cubemap_utils = self.cubemap_utils.to(device)
+
             panoramas = []
             for b in range(batch_size):
                 batch_faces = [face[b:b+1] for face in decoded_faces]
@@ -435,6 +462,7 @@ class CubeDiff(nn.Module):
 
         else:
             raise ValueError(f"Unsupported output_type: {output_type}")
+
 
     def prepare_latents_for_training(self,
                                     images: List[torch.Tensor],

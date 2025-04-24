@@ -20,7 +20,7 @@ def parse_args():
     parser.add_argument("--guidance_scale", type=float, default=7.5, help="Classifier-free guidance scale")
     parser.add_argument("--num_steps", type=int, default=50, help="Number of sampling steps")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
-    parser.add_argument("--use_cpu", action="store_true", help="Use CPU for initial loading")
+    parser.add_argument("--use_cpu", action="store_true", help="Use CPU for inference")
     parser.add_argument("--half_precision", action="store_true", help="Use half precision (float16)")
     return parser.parse_args()
 
@@ -78,6 +78,7 @@ def main():
 
     # Determine device
     device = torch.device("cpu" if args.use_cpu else ("cuda" if torch.cuda.is_available() else "cpu"))
+    print(f"Using device: {device}")
 
     # Load model config if available, otherwise use defaults
     config_path = os.path.join(args.checkpoint, "config.json")
@@ -92,41 +93,46 @@ def main():
             prediction_type="v"
         )
 
-    # Load model with special options to save memory
-    print(f"Loading model from {args.checkpoint} to {device}")
+    # Create the model - always initialize on CPU first to avoid memory issues
+    print(f"Loading model from {args.checkpoint}")
 
-    # Memory-efficient loading
-    load_device = torch.device("cpu") if args.use_cpu else device
-    unet_path = os.path.join(args.checkpoint, "unet", "pytorch_model.bin")
-    vae_path = os.path.join(args.checkpoint, "vae", "pytorch_model.bin")
+    # Add method to CubeDiffConfig class to load from file if it doesn't exist
+    if not hasattr(CubeDiffConfig, "update_from_file"):
+        def update_from_file(self, config_path):
+            import json
+            with open(config_path, 'r') as f:
+                config_dict = json.load(f)
+            for key, value in config_dict.items():
+                if hasattr(self, key):
+                    setattr(self, key, value)
+        CubeDiffConfig.update_from_file = update_from_file
 
-    model = CubeDiff(config=config, device=load_device)
+    # Initialize the model on CPU first
+    model = CubeDiff(config=config, device=torch.device("cpu"))
 
     print("Loading UNet...")
-    # Load with weights_only=True to save memory
-    unet_state_dict = torch.load(unet_path, map_location=load_device, weights_only=True)
+    unet_path = os.path.join(args.checkpoint, "unet", "pytorch_model.bin")
+    unet_state_dict = torch.load(unet_path, map_location="cpu")
     model.unet.load_state_dict(unet_state_dict)
     del unet_state_dict
-    torch.cuda.empty_cache()
     gc.collect()
 
     print("Loading VAE...")
-    # Load with weights_only=True to save memory
-    vae_state_dict = torch.load(vae_path, map_location=load_device, weights_only=True)
+    vae_path = os.path.join(args.checkpoint, "vae", "pytorch_model.bin")
+    vae_state_dict = torch.load(vae_path, map_location="cpu")
     model.vae.load_state_dict(vae_state_dict)
     del vae_state_dict
-    torch.cuda.empty_cache()
     gc.collect()
 
     # Convert to half precision if requested
     if args.half_precision:
         model = model.half()
 
-    # If initially loaded to CPU, now move to GPU
-    if args.use_cpu and torch.cuda.is_available():
-        print("Moving model to GPU for inference...")
-        model = model.to(device)
+    # Move model to the target device
+    model = model.to(device)
+    print(f"Model moved to {device}")
 
+    # Set model to evaluation mode
     model.eval()
 
     # Prepare conditioning image if provided
@@ -149,28 +155,34 @@ def main():
     # Generate panorama
     with torch.no_grad():
         print("Generating panorama...")
-        output = model.generate_panorama(
-            prompts=[prompt],
-            cond_face_idx=args.face_idx if cond_image is not None else None,
-            cond_face_image=cond_image,
-            guidance_scale=args.guidance_scale,
-            height=args.resolution,
-            width=args.resolution,
-            num_inference_steps=args.num_steps,
-            output_type="equirectangular",
-            return_dict=True
-        )
+        try:
+            output = model.generate_panorama(
+                prompts=[prompt],
+                cond_face_idx=args.face_idx if cond_image is not None else None,
+                cond_face_image=cond_image,
+                guidance_scale=args.guidance_scale,
+                height=args.resolution,
+                width=args.resolution,
+                num_inference_steps=args.num_steps,
+                output_type="equirectangular",
+                return_dict=True
+            )
 
-    # Save outputs
-    prefix = Path(args.input_image).stem if args.input_image else "generated"
+            # Save outputs
+            prefix = Path(args.input_image).stem if args.input_image else "generated"
 
-    # Save faces
-    save_cubemap_faces(output["faces"], args.output_dir, prefix=prefix)
+            # Save faces
+            save_cubemap_faces(output["faces"], args.output_dir, prefix=prefix)
 
-    # Save panorama
-    save_equirectangular(output["panorama"], args.output_dir, prefix=prefix)
+            # Save panorama
+            save_equirectangular(output["panorama"], args.output_dir, prefix=prefix)
 
-    print("Generation complete!")
+            print("Generation complete!")
+
+        except Exception as e:
+            print(f"Error generating panorama: {str(e)}")
+            import traceback
+            traceback.print_exc()
 
 if __name__ == "__main__":
     main()

@@ -1,4 +1,4 @@
-from typing import Dict
+from typing import Dict, Optional
 
 import torch
 import numpy as np
@@ -30,6 +30,14 @@ class PositionalEncoding:
         self.overlap = overlap
 
         self.position_encodings = self._precompute_position_encodings()
+        self.device = torch.device('cpu')
+
+    def to(self, device):
+        """Move the encodings to the specified device"""
+        self.device = device
+        for face in self.position_encodings:
+            self.position_encodings[face] = self.position_encodings[face].to(device)
+        return self
 
     def _precompute_position_encodings(self) -> Dict[str, torch.Tensor]:
         encodings = {}
@@ -82,7 +90,7 @@ class PositionalEncoding:
 
     def get_positional_encoding(self,
                                batch_size: int,
-                               device: torch.device) -> torch.Tensor:
+                               device: Optional[torch.device] = None) -> torch.Tensor:
         """
         Get positional encoding for all cubemap faces.
 
@@ -93,6 +101,9 @@ class PositionalEncoding:
         Returns:
             torch.Tensor: Position encoding tensor [B, 6, 2, H, W]
         """
+        if device is None:
+            device = self.device
+
         encodings_list = []
 
         for face_name in ['front', 'right', 'back', 'left', 'up', 'down']:
@@ -141,9 +152,10 @@ class PositionalEncoding:
 
         batch_size = latents.shape[0] // num_frames
         channels, height, width = latents.shape[1:]
+        device = latents.device
 
         # Get positional encodings
-        encodings = self.get_positional_encoding(batch_size, device=latents.device)  # [B, 6, 2, H, W]
+        encodings = self.get_positional_encoding(batch_size, device)  # [B, 6, 2, H, W]
 
         # Reshape to [B*6, 2, H, W]
         encodings_flat = encodings.reshape(batch_size * num_frames, 2, height, width)
@@ -151,7 +163,7 @@ class PositionalEncoding:
         return encodings_flat
 
     def spatial_uv_encoding(self, batch_size: int, height: int, width: int,
-                            device: torch.device) -> torch.Tensor:
+                            device: Optional[torch.device] = None) -> torch.Tensor:
         """
         Generate UV positional encoding for all spatial positions across all faces.
 
@@ -164,6 +176,9 @@ class PositionalEncoding:
         Returns:
             torch.Tensor: Spatial UV encoding tensor [B, 6, 2, H, W]
         """
+        if device is None:
+            device = self.device
+
         pos_enc = self.get_positional_encoding(batch_size, device)
 
         if height != self.cube_size or width != self.cube_size:
@@ -184,5 +199,6 @@ class PositionalProjectionLayer(nn.Module):
         self.projection = nn.Conv2d(in_channels, out_channels, kernel_size=1)
 
     def forward(self, x):
-        self.projection.to(x.device)
+        if self.projection.weight.device != x.device:
+            self.projection = self.projection.to(x.device)
         return self.projection(x)
